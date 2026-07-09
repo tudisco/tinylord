@@ -38,11 +38,14 @@ impl FromRequestParts<AppState> for Principal {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let token = bearer_token(parts)?;
-        let principal = state
-            .system
-            .lookup_by_token(&token)
-            .map_err(ApiError::internal)?
-            .ok_or_else(|| ApiError::unauthorized("invalid or disabled token"))?;
+        let principal = match state.system.lookup_by_token(&token).map_err(ApiError::internal)? {
+            Some(principal) => principal,
+            None => state
+                .system
+                .lookup_browser_access_token(&token)
+                .map_err(ApiError::internal)?
+                .ok_or_else(|| ApiError::unauthorized("invalid or disabled token"))?,
+        };
 
         // Per-principal rate limit (§11). Applied here so every authenticated
         // route is covered uniformly.

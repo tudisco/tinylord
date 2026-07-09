@@ -128,7 +128,8 @@ fn cli_encryption(cfg: &Config) -> Result<Encryption> {
 }
 
 async fn serve(config_path: &PathBuf, allow_unencrypted: bool) -> Result<()> {
-    let cfg = Config::load(config_path)?;
+    let mut cfg = Config::load(config_path)?;
+    cfg.validate_static_apps()?;
     let encryption = encryption::resolve(&cfg, allow_unencrypted)?;
     if encryption.is_enabled() {
         tracing::info!("encryption at rest: ENABLED (SQLCipher)");
@@ -150,6 +151,7 @@ async fn serve(config_path: &PathBuf, allow_unencrypted: bool) -> Result<()> {
 
     let registry = Arc::new(db::DbRegistry::new(&cfg, encryption.clone(), storage));
     let bind = cfg.server.bind.clone();
+    let static_apps = cfg.static_apps.clone();
     let state = api::AppState::new(system, registry, cfg, encryption);
     let app = api::build_router(state);
 
@@ -158,10 +160,27 @@ async fn serve(config_path: &PathBuf, allow_unencrypted: bool) -> Result<()> {
         .with_context(|| format!("binding {bind}"))?;
     tracing::info!("tinylord listening on http://{bind}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
+    let mut servers = tokio::task::JoinSet::new();
+    for static_app in static_apps {
+        let app = api::with_static_files(app.clone(), static_app.directory.clone(), static_app.spa_fallback);
+        let name = static_app.name.clone();
+        let static_bind = static_app.bind.clone();
+        servers.spawn(async move {
+            let listener = tokio::net::TcpListener::bind(&static_bind).await
+                .with_context(|| format!("binding static app {name} on {static_bind}"))?;
+            tracing::info!(app = %name, bind = %static_bind, "tinylord static app listening");
+            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.context("static app server")
+        });
+    }
+    let api_server = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>());
+    tokio::select! {
+        result = api_server => result.context("server error")?,
+        result = servers.join_next(), if !servers.is_empty() => {
+            match result { Some(Ok(Err(e))) => return Err(e), Some(Err(e)) => return Err(anyhow::anyhow!("static server task failed: {e}")), _ => {} }
+        }
+        _ = shutdown_signal() => {}
+    }
+    servers.abort_all();
     Ok(())
 }
 

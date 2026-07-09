@@ -58,6 +58,10 @@ key_file = "{key}"
 
 [cors]
 allowed_origins = ["http://localhost:5173"]
+
+[auth]
+public_registration = true
+secure_cookies = false
 "#,
         data = data_dir.display(),
         snap = snap_dir.display(),
@@ -290,6 +294,70 @@ async fn auth_errors() {
         .unwrap()
         .status();
     assert_eq!(notfound, 404);
+}
+
+#[tokio::test]
+async fn browser_login_refresh_logout_and_grants() {
+    let s = start_server(1_048_576).await;
+    let c = s.client();
+    let login = c.post(format!("{}/v1/auth/register", s.base))
+        .json(&serde_json::json!({ "username": "delegate", "password": "long-enough-password" })).send().await.unwrap();
+    assert_eq!(login.status(), 200);
+    let refresh = login.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+    let body: serde_json::Value = login.json().await.unwrap();
+    let access = body["access_token"].as_str().unwrap();
+    let csrf = body["csrf_token"].as_str().unwrap();
+    let me: serde_json::Value = c.get(format!("{}/v1/auth/me", s.base)).bearer_auth(access).send().await.unwrap().json().await.unwrap();
+    let id = me["id"].as_str().unwrap();
+
+    c.post(format!("{}/v1/admin/databases", s.base)).bearer_auth(&s.admin).json(&serde_json::json!({"name":"private"})).send().await.unwrap();
+    c.post(format!("{}/v1/admin/grants", s.base)).bearer_auth(&s.admin).json(&serde_json::json!({"principal_id": id, "database":"private", "role":"write"})).send().await.unwrap();
+    assert_eq!(c.post(format!("{}/v1/db/private/collections/workspace/documents", s.base)).bearer_auth(access).json(&serde_json::json!({"ok":true})).send().await.unwrap().status(), 201);
+
+    let refreshed = c.post(format!("{}/v1/auth/refresh", s.base)).header("cookie", &refresh).header("x-csrf-token", csrf).send().await.unwrap();
+    assert_eq!(refreshed.status(), 200);
+    let new_refresh = refreshed.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+    let refreshed_body: serde_json::Value = refreshed.json().await.unwrap();
+    assert_ne!(refreshed_body["access_token"], body["access_token"]);
+    assert_eq!(c.post(format!("{}/v1/auth/refresh", s.base)).header("cookie", &refresh).header("x-csrf-token", csrf).send().await.unwrap().status(), 401);
+    assert_eq!(c.post(format!("{}/v1/auth/logout", s.base)).header("cookie", new_refresh).header("x-csrf-token", refreshed_body["csrf_token"].as_str().unwrap()).send().await.unwrap().status(), 204);
+    for _ in 0..5 {
+        assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "delegate", "password": "wrong-password" })).send().await.unwrap().status(), 401);
+    }
+    assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "delegate", "password": "wrong-password" })).send().await.unwrap().status(), 429);
+}
+
+#[tokio::test]
+async fn static_apps_are_isolated_and_keep_api_routes() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(first.join("index.html"), "first app").unwrap();
+    std::fs::write(first.join("asset.abc.js"), "one").unwrap();
+    std::fs::write(second.join("index.html"), "second app").unwrap();
+    let api_port = free_port(); let first_port = free_port(); let second_port = free_port();
+    let cfg = dir.path().join("tinylord.toml");
+    let cfg_text = format!(
+        "[server]\nbind=\"127.0.0.1:{api_port}\"\ndata_dir=\"{}\"\nsnapshot_dir=\"{}\"\n[encryption]\nenabled=true\nkey_source=\"key_file\"\nkey_file=\"{}\"\n[[static_apps]]\nname=\"first\"\nbind=\"127.0.0.1:{first_port}\"\ndirectory=\"{}\"\nspa_fallback=true\n[[static_apps]]\nname=\"second\"\nbind=\"127.0.0.1:{second_port}\"\ndirectory=\"{}\"\nspa_fallback=true\n",
+        dir.path().join("data").display(), dir.path().join("snap").display(), dir.path().join("key").display(), first.display(), second.display(),
+    );
+    std::fs::write(&cfg, cfg_text).unwrap();
+    let mut child = Command::new(BIN).args(["--config", cfg.to_str().unwrap(), "serve"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let c = reqwest::Client::new(); let first_base = format!("http://127.0.0.1:{first_port}");
+    let mut ready = false;
+    for _ in 0..100 { if c.get(format!("{first_base}/health")).send().await.map(|r| r.status().is_success()).unwrap_or(false) { ready = true; break; } tokio::time::sleep(Duration::from_millis(50)).await; }
+    assert!(ready, "static app did not become ready");
+    let library = c.get(format!("{first_base}/tinylord.js")).send().await.unwrap();
+    assert_eq!(library.status(), 200);
+    assert!(library.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/javascript"));
+    assert_eq!(c.get(format!("{first_base}/asset.abc.js")).send().await.unwrap().text().await.unwrap(), "one");
+    assert_eq!(c.get(format!("{first_base}/dashboard/today")).send().await.unwrap().text().await.unwrap(), "first app");
+    assert_eq!(c.get(format!("http://127.0.0.1:{second_port}/dashboard")).send().await.unwrap().text().await.unwrap(), "second app");
+    assert_eq!(c.get(format!("{first_base}/v1/unknown")).send().await.unwrap().status(), 404);
+    assert_eq!(c.get(format!("{first_base}/%2e%2e/second/index.html")).send().await.unwrap().status(), 404);
+    let _ = child.kill(); let _ = child.wait();
 }
 
 #[tokio::test]

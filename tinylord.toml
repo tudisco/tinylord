@@ -33,6 +33,24 @@ sse_channel_capacity = 256        # broadcast buffer; lagging subscribers get a 
 # Explicit allow-list. NEVER use "*" when bearer tokens are in play (§15).
 allowed_origins = ["http://localhost:5173"]
 
+[auth]
+# Browser self-registration is off by default. Create browser users with the
+# admin API instead, or deliberately enable this for a private deployment.
+public_registration = false
+# Access tokens are returned in JSON; refresh sessions are HttpOnly cookies.
+access_token_ttl_secs  = 900
+refresh_token_ttl_secs = 2592000
+# Leave true behind HTTPS/Cloudflare. Set false only for local HTTP development.
+secure_cookies = true
+
+# Optional app-specific loopback listeners. This list is file-only: no
+# environment override can select a directory to expose.
+# [[static_apps]]
+# name = "delegate"
+# bind = "127.0.0.1:9300"
+# directory = "/home/tudisco/DelegateServer/public"
+# spa_fallback = true
+
 [encryption]
 # Encryption at rest via SQLCipher is ON by default (§20). Running unencrypted
 # requires BOTH `enabled = false` here AND the `--allow-unencrypted` serve flag.

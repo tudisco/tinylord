@@ -66,6 +66,7 @@ pub struct CreatePrincipalBody {
     name: String,
     #[serde(default)]
     is_admin: bool,
+    password: Option<String>,
 }
 
 pub async fn create_principal(
@@ -73,6 +74,19 @@ pub async fn create_principal(
     _admin: AdminPrincipal,
     Json(body): Json<CreatePrincipalBody>,
 ) -> ApiResult<impl IntoResponse> {
+    if let Some(password) = body.password {
+        if body.is_admin {
+            return Err(ApiError::validation("browser users cannot be global admins"));
+        }
+        if !super::browser_auth::valid_username(&body.name) {
+            return Err(ApiError::validation("username must be 3 to 64 letters, numbers, '_' or '-'"));
+        }
+        let hash = super::browser_auth::hash_password(&password)?;
+        let user = state.system.create_browser_user(&body.name, &hash).map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") { ApiError::conflict("username already exists") } else { ApiError::internal(e) }
+        })?;
+        return Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": user.id, "name": body.name }))));
+    }
     let (id, token) = state
         .system
         .create_principal(&body.name, body.is_admin)

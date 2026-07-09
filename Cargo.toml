@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["full"] }
 # HTTP stack
 axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace", "fs"] }
 
 # SQLite + SQLCipher (encryption at rest, §20). SQLCipher overrides plain `bundled`.
 # `bundled-sqlcipher-vendored-openssl` statically links a vendored OpenSSL so the
@@ -60,6 +60,7 @@ hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 anyhow = "1"
+argon2 = "0.5"
 
 # SSE stream construction
 async-stream = "0.3"

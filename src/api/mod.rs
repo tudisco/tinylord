@@ -1,6 +1,7 @@
 //! HTTP surface: shared state, router assembly, health, and OpenAPI (§7).
 
 pub mod admin;
+pub mod browser_auth;
 pub mod documents;
 pub mod indexes;
 pub mod query_ep;
@@ -12,7 +13,7 @@ use crate::encryption::Encryption;
 use crate::errors::{ApiError, ApiResult};
 use crate::limits::RateGuard;
 use crate::system::{Role, System};
-use axum::http::{header, HeaderValue, Method};
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 /// Application state shared by all handlers. Cheap to clone.
 #[derive(Clone)]
@@ -27,6 +29,7 @@ pub struct AppState {
     pub system: System,
     pub registry: Arc<DbRegistry>,
     pub rate_guard: Arc<RateGuard>,
+    pub login_guard: Arc<LoginGuard>,
     pub config: Arc<Config>,
     /// Held for future use (e.g. per-request keyed operations); the registry and
     /// system already carry their own clones for opening connections.
@@ -43,11 +46,13 @@ impl AppState {
         encryption: Encryption,
     ) -> Self {
         let rate_guard = Arc::new(RateGuard::new(config.limits.rate_per_minute));
+        let login_guard = Arc::new(LoginGuard::default());
         let openapi = Arc::new(openapi_doc().to_string());
         Self {
             system,
             registry,
             rate_guard,
+            login_guard,
             config: Arc::new(config),
             encryption,
             openapi,
@@ -112,6 +117,12 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
+        .route("/tinylord.js", get(browser_library))
+        .route("/v1/auth/register", post(browser_auth::register))
+        .route("/v1/auth/login", post(browser_auth::login))
+        .route("/v1/auth/refresh", post(browser_auth::refresh))
+        .route("/v1/auth/logout", post(browser_auth::logout))
+        .route("/v1/auth/me", get(browser_auth::me))
         // Admin (§7.2)
         .route(
             "/v1/admin/databases",
@@ -165,11 +176,33 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/db/{db}/collections/{coll}/subscribe",
             get(crate::realtime::subscribe),
         )
+        // A missing API route must never fall through to a static SPA entry.
+        .route("/v1/{*path}", axum::routing::any(api_not_found))
         // Global request body limit (§11). Layered outermost so it applies to all.
         .layer(RequestBodyLimitLayer::new(body_limit))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Add static hosting after all API routes, preserving API precedence.
+pub fn with_static_files(app: Router, directory: std::path::PathBuf, spa_fallback: bool) -> Router {
+    let files = ServeDir::new(&directory);
+    if spa_fallback {
+        app.fallback_service(files.not_found_service(ServeFile::new(directory.join("index.html"))))
+    } else {
+        app.fallback_service(files)
+    }
+}
+
+async fn api_not_found() -> ApiError { ApiError::not_found("API route not found") }
+
+#[derive(Default)]
+pub struct LoginGuard { attempts: std::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>> }
+impl LoginGuard {
+    pub fn check(&self, key: &str) -> bool { let mut m = self.attempts.lock().expect("login guard lock"); let e = m.entry(key.to_string()).or_insert((0, std::time::Instant::now())); if e.1.elapsed() >= std::time::Duration::from_secs(60) { *e = (0, std::time::Instant::now()); } e.0 < 5 }
+    pub fn fail(&self, key: &str) { let mut m = self.attempts.lock().expect("login guard lock"); let e = m.entry(key.to_string()).or_insert((0, std::time::Instant::now())); e.0 += 1; }
+    pub fn success(&self, key: &str) { self.attempts.lock().expect("login guard lock").remove(key); }
 }
 
 fn build_cors(cfg: &CorsConfig) -> CorsLayer {
@@ -195,7 +228,11 @@ fn build_cors(cfg: &CorsConfig) -> CorsLayer {
             Method::PUT,
             Method::DELETE,
         ])
-        .allow_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_headers(vec![
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            HeaderName::from_static("x-csrf-token"),
+        ])
 }
 
 async fn health() -> impl IntoResponse {
@@ -206,6 +243,16 @@ async fn openapi(axum::extract::State(state): axum::extract::State<AppState>) ->
     (
         [(header::CONTENT_TYPE, "application/json")],
         state.openapi.as_ref().clone(),
+    )
+}
+
+async fn browser_library() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../../tinylord.js"),
     )
 }
 

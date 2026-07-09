@@ -24,8 +24,10 @@ transits config, logs, or the API.
 - [Build](#build)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
+- [Static applications & deployment](#static-applications--deployment)
 - [Encryption at rest](#encryption-at-rest)
 - [Authentication & roles](#authentication--roles)
+- [Browser authentication](#browser-authentication)
 - [CLI reference](#cli-reference)
 - [HTTP API reference](#http-api-reference) (every endpoint, with curl)
 - [Query language](#query-language)
@@ -70,6 +72,7 @@ Run the tests:
 
 ```bash
 cargo test
+node tests/tinylord_client.mjs
 ```
 
 ---
@@ -146,6 +149,60 @@ See the fully-commented [`tinylord.toml`](tinylord.toml) in this repo. Summary:
 | `encryption`  | `key_source`             | `key_file`                  | `key_file` \| `env` \| `keyring` |
 | `encryption`  | `key_file`               | `./secrets/tinylord.key`     | 0600 file holding the 64-hex key |
 
+`[[static_apps]]` is intentionally file-only. Each entry needs a unique safe
+`name`, a unique loopback `bind` address, and an existing `directory`; all are
+validated and canonicalized before the server starts.
+
+## Static applications & deployment
+
+TinyLord can serve a static application and the API from the same origin by
+adding one listener per application:
+
+```toml
+[[static_apps]]
+name = "delegate"
+bind = "127.0.0.1:9300"
+directory = "/home/tudisco/DelegateServer/public"
+spa_fallback = true
+```
+
+The static handler uses the configured directory only and rejects traversal.
+`/v1/*`, `/health`, and `/openapi.json` always take precedence over static
+files. With `spa_fallback = true`, unknown non-API paths serve `index.html`;
+unknown API paths remain `404`. Files receive normal MIME types from the static
+file service. Deploy fingerprinted assets so ordinary HTTP revalidation stays
+safe while browsers retain immutable asset names efficiently.
+
+Keep every listener on loopback. A Cloudflare Tunnel may map a hostname to its
+corresponding local port, such as `http://127.0.0.1:9300`; TinyLord does not
+terminate public TLS itself.
+
+Example `systemd` unit (`/etc/systemd/system/tinylord.service`):
+
+```ini
+[Unit]
+Description=tinylord
+After=network-online.target
+
+[Service]
+User=tudisco
+Group=tudisco
+WorkingDirectory=/home/tudisco/DelegateServer
+ExecStart=/home/tudisco/DelegateServer/tinylord serve --config /home/tudisco/DelegateServer/tinylord.toml
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The service user must own `data/`, `snapshots/`, and `secrets/`; do not make
+the encryption key readable by other users. Back up the key separately from
+the encrypted database files—both are required for recovery.
+
 ---
 
 ## Encryption at rest
@@ -218,6 +275,124 @@ active mode is logged at startup.
   - `read` — GET / query / count / subscribe
   - `write` — adds create / replace / delete
   - `admin` — adds index management and snapshot for that database
+
+## Browser authentication
+
+Browser users are principals too, so the existing per-database grants remain
+the authorization source of truth. An operator can create one through
+`POST /v1/admin/principals` with `{ "name": "delegate", "password": "..." }`,
+then grant that returned `id` a database role. This form does not return an
+operator bearer token. Public `POST /v1/auth/register` is disabled unless
+`[auth].public_registration = true`.
+
+`POST /v1/auth/login` accepts `{ "username", "password" }` and returns a
+15-minute access token plus a CSRF token. It also sets a rotating, HttpOnly,
+SameSite=Strict refresh cookie. Passwords are Argon2id hashes; access tokens,
+refresh sessions, and CSRF values are stored only as SHA-256 hashes. Login
+failures use a generic response and are limited by source IP and username.
+
+Use the returned access token only in memory as `Authorization: Bearer ...`.
+Send the CSRF value in `X-CSRF-Token` for `POST /v1/auth/refresh` and
+`POST /v1/auth/logout`; refresh rotates the session and CSRF value. In
+production `secure_cookies = true` requires HTTPS (including a Cloudflare
+Tunnel origin). Set it to `false` only for local HTTP development.
+
+SSE still uses bearer authorization. Browser clients that need realtime should
+use a `fetch()` streaming client with the short-lived access token; do not put
+tokens in query strings.
+
+### Browser client module
+
+Every TinyLord listener serves a browser-native ES module at `/tinylord.js`.
+It requires no bundler and keeps the access token only in the module instance:
+
+```html
+<script type="module">
+  import { TinyLord } from "/tinylord.js";
+
+  const tinylord = TinyLord.connect();
+  await tinylord.login("delegate", "correct horse battery staple");
+
+  const tasks = tinylord.collection("delegate", "tasks");
+  await tasks.create({ title: "Ship it", done: false });
+  const { items } = await tasks.query({ filter: { done: false } });
+
+  for await (const event of tasks.subscribe()) {
+    if (event.type === "change") console.log(event.data);
+  }
+</script>
+```
+
+### Client API reference
+
+Create one client per signed-in browser session. `baseUrl` defaults to the
+current origin; set it only when deliberately calling a different origin.
+
+```js
+const tinylord = TinyLord.connect({ baseUrl: "" });
+```
+
+| Call | Result | Notes |
+|------|--------|-------|
+| `register(username, password)` | Session object | Works only when public registration is enabled. |
+| `login(username, password)` | Session object | Stores the returned access and CSRF tokens in the client instance. |
+| `refresh()` | New session object | Uses the HttpOnly refresh cookie and rotates it. Call after a `401` due to access-token expiry. |
+| `logout()` | `undefined` | Revokes the refresh session and clears the in-memory tokens. |
+| `me()` | `{ id, name }` | Confirms the current access token. |
+| `db(name).collection(name)` | Collection | Equivalent to `collection(database, collection)`. |
+
+A session object has `{ access_token, token_type, expires_in, csrf_token }`.
+Do not save it to localStorage, sessionStorage, URLs, or application records.
+The client retains it only in memory, so refresh after a page reload.
+
+Every collection method returns the server JSON envelope unchanged:
+
+```js
+const tasks = tinylord.collection("delegate", "tasks");
+
+const created = await tasks.create({ title: "Write docs" });
+const one = await tasks.get(created.id);
+const changed = await tasks.put(created.id, { title: "Write clear docs" });
+await tasks.delete(created.id);
+
+const page = await tasks.query({
+  filter: { done: false },
+  sort: [["updated_at", "desc"]],
+  limit: 25,
+});
+const total = await tasks.count({ done: false });
+```
+
+`subscribe()` is an async generator. Its values are
+`{ type, id, data }`, where `type` is normally `change` or `resync`, `id` is
+the SSE sequence number when present, and `data` is parsed JSON. Pass `filter`
+for the SSE equality-filter subset, `lastEventId` to request replay from a
+previous event ID, and an `AbortSignal` to stop listening:
+
+```js
+const controller = new AbortController();
+let lastEventId;
+
+try {
+  for await (const event of tasks.subscribe({ lastEventId, signal: controller.signal })) {
+    lastEventId = event.id ?? lastEventId;
+    if (event.type === "resync") {
+      // Re-query the collection; missed events cannot be replayed.
+      await tasks.query({});
+    } else if (event.type === "change") {
+      console.log(event.data);
+    }
+  }
+} finally {
+  controller.abort();
+}
+```
+
+All failed requests throw `TinyLordError`, with `status`, `code`, and `detail`
+in addition to the message. A normal recovery path is: on `401`, call
+`refresh()` once and retry the original request; if that refresh also fails,
+clear local UI state and show the sign-in screen. Do not retry validation,
+permission, or conflict errors blindly.
 
 ---
 

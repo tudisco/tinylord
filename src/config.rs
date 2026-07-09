@@ -22,6 +22,29 @@ pub struct Config {
     pub realtime: RealtimeConfig,
     pub cors: CorsConfig,
     pub encryption: EncryptionConfig,
+    pub auth: AuthConfig,
+    /// File-only static application listeners. They deliberately have no
+    /// environment overrides: an environment value must not choose a directory
+    /// to expose over HTTP.
+    pub static_apps: Vec<StaticAppConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StaticAppConfig {
+    pub name: String,
+    pub bind: String,
+    pub directory: PathBuf,
+    #[serde(default)]
+    pub spa_fallback: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    pub public_registration: bool,
+    pub access_token_ttl_secs: i64,
+    pub refresh_token_ttl_secs: i64,
+    pub secure_cookies: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,6 +177,17 @@ impl Default for EncryptionConfig {
     }
 }
 
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            public_registration: false,
+            access_token_ttl_secs: 900,
+            refresh_token_ttl_secs: 2_592_000,
+            secure_cookies: true,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -163,7 +197,40 @@ impl Default for Config {
             realtime: RealtimeConfig::default(),
             cors: CorsConfig::default(),
             encryption: EncryptionConfig::default(),
+            auth: AuthConfig::default(),
+            static_apps: Vec::new(),
         }
+    }
+}
+
+impl Config {
+    /// Validate and canonicalize static-app configuration before any listener
+    /// starts. This is intentionally separate from environment overrides.
+    pub fn validate_static_apps(&mut self) -> anyhow::Result<()> {
+        use std::collections::HashSet;
+        let mut names = HashSet::new();
+        let mut binds = HashSet::new();
+        for app in &mut self.static_apps {
+            crate::ids::require_valid_name("static app", &app.name)
+                .map_err(|e| anyhow::anyhow!(e.message))?;
+            if !names.insert(app.name.clone()) {
+                anyhow::bail!("duplicate static app name '{}'", app.name);
+            }
+            let addr: std::net::SocketAddr = app.bind.parse()
+                .map_err(|_| anyhow::anyhow!("static app '{}' has an invalid bind address", app.name))?;
+            if !addr.ip().is_loopback() {
+                anyhow::bail!("static app '{}' must bind to a loopback address", app.name);
+            }
+            if !binds.insert(addr) {
+                anyhow::bail!("duplicate static app bind address '{}'", app.bind);
+            }
+            app.directory = std::fs::canonicalize(&app.directory)
+                .map_err(|e| anyhow::anyhow!("static app '{}': cannot access directory: {e}", app.name))?;
+            if !app.directory.is_dir() {
+                anyhow::bail!("static app '{}' directory is not a directory", app.name);
+            }
+        }
+        Ok(())
     }
 }
 
