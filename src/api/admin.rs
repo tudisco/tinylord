@@ -23,7 +23,11 @@ pub async fn create_database(
     Json(body): Json<CreateDatabaseBody>,
 ) -> ApiResult<impl IntoResponse> {
     ids::require_valid_name("database", &body.name)?;
-    match state.system.insert_database(&body.name).map_err(ApiError::internal)? {
+    match state
+        .system
+        .insert_database(&body.name)
+        .map_err(ApiError::internal)?
+    {
         Some(created_at) => {
             // Create the file and initialize its per-db schema (§7.2).
             state.registry.init_new_database(&body.name).await?;
@@ -50,7 +54,11 @@ pub async fn delete_database(
     Path(db): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     ids::require_valid_name("database", &db)?;
-    if !state.system.database_exists(&db).map_err(ApiError::internal)? {
+    if !state
+        .system
+        .database_exists(&db)
+        .map_err(ApiError::internal)?
+    {
         return Err(ApiError::not_found("database not found"));
     }
     state.registry.drop_database(&db).await?;
@@ -76,16 +84,30 @@ pub async fn create_principal(
 ) -> ApiResult<impl IntoResponse> {
     if let Some(password) = body.password {
         if body.is_admin {
-            return Err(ApiError::validation("browser users cannot be global admins"));
+            return Err(ApiError::validation(
+                "browser users cannot be global admins",
+            ));
         }
         if !super::browser_auth::valid_username(&body.name) {
-            return Err(ApiError::validation("username must be 3 to 64 letters, numbers, '_' or '-'"));
+            return Err(ApiError::validation(
+                "username must be 3 to 64 letters, numbers, '_' or '-'",
+            ));
         }
         let hash = super::browser_auth::hash_password(&password)?;
-        let user = state.system.create_browser_user(&body.name, &hash).map_err(|e| {
-            if e.to_string().contains("UNIQUE constraint failed") { ApiError::conflict("username already exists") } else { ApiError::internal(e) }
-        })?;
-        return Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": user.id, "name": body.name }))));
+        let user = state
+            .system
+            .create_browser_user(&body.name, &hash)
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    ApiError::conflict("username already exists")
+                } else {
+                    ApiError::internal(e)
+                }
+            })?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "id": user.id, "name": body.name })),
+        ));
     }
     let (id, token) = state
         .system
@@ -98,13 +120,48 @@ pub async fn create_principal(
     ))
 }
 
+#[derive(Deserialize)]
+pub struct ResetBrowserPasswordBody {
+    name: String,
+    password: String,
+}
+
+/// Reset a browser user's password. This is intentionally admin-only and
+/// invalidates existing browser access and refresh tokens for that user.
+pub async fn reset_browser_password(
+    State(state): State<AppState>,
+    _admin: AdminPrincipal,
+    Json(body): Json<ResetBrowserPasswordBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !super::browser_auth::valid_username(&body.name) {
+        return Err(ApiError::validation(
+            "username must be 3 to 64 letters, numbers, '_' or '-'",
+        ));
+    }
+    let hash = super::browser_auth::hash_password(&body.password)?;
+    let Some(user) = state
+        .system
+        .reset_browser_password(&body.name, &hash)
+        .map_err(ApiError::internal)?
+    else {
+        return Err(ApiError::not_found("browser user not found"));
+    };
+    Ok(Json(
+        serde_json::json!({ "id": user.id, "name": body.name }),
+    ))
+}
+
 pub async fn delete_principal(
     State(state): State<AppState>,
     _admin: AdminPrincipal,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     // Soft-disable (§7.2).
-    if state.system.disable_principal(&id).map_err(ApiError::internal)? {
+    if state
+        .system
+        .disable_principal(&id)
+        .map_err(ApiError::internal)?
+    {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::not_found("principal not found"))

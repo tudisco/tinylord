@@ -159,7 +159,9 @@ impl System {
         )?;
         // Lightweight migration for instances created before browser login.
         let mut stmt = conn.prepare("PRAGMA table_info(principals)")?;
-        let columns: Vec<String> = stmt.query_map([], |r| r.get(1))?.collect::<Result<_, _>>()?;
+        let columns: Vec<String> = stmt
+            .query_map([], |r| r.get(1))?
+            .collect::<Result<_, _>>()?;
         if !columns.iter().any(|c| c == "username") {
             conn.execute_batch("ALTER TABLE principals ADD COLUMN username TEXT; ALTER TABLE principals ADD COLUMN password_hash TEXT;")?;
             conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS ux_principals_username ON principals(username) WHERE username IS NOT NULL;")?;
@@ -180,7 +182,11 @@ impl System {
 
     /// Create a principal and return `(id, plaintext_token)`. Only the hash is
     /// persisted; the plaintext is the caller's single chance to capture it.
-    pub fn create_principal(&self, name: &str, is_admin: bool) -> Result<(String, Zeroizing<String>)> {
+    pub fn create_principal(
+        &self,
+        name: &str,
+        is_admin: bool,
+    ) -> Result<(String, Zeroizing<String>)> {
         let id = crate::ids::new_ulid();
         let (token, hash) = generate_token();
         let now = crate::ids::now_ms();
@@ -242,30 +248,99 @@ impl System {
             params![username],
             |r| Ok((BrowserUser { id: r.get(0)? }, r.get(1)?)),
         );
-        match r { Ok(v) => Ok(Some(v)), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), Err(e) => Err(e.into()) }
+        match r {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
-    pub fn issue_browser_tokens(&self, principal_id: &str, access_ttl_secs: i64, refresh_ttl_secs: i64) -> Result<(Zeroizing<String>, Zeroizing<String>, Zeroizing<String>)> {
+    /// Reset a browser user's password and revoke every browser-issued session.
+    /// Operator tokens remain independent from browser credentials.
+    pub fn reset_browser_password(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<Option<BrowserUser>> {
+        let conn = self.conn()?;
+        let id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM principals WHERE username = ?1 AND disabled = 0 AND is_admin = 0",
+                params![username],
+                |r| r.get(0),
+            )
+            .ok();
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        conn.execute(
+            "UPDATE principals SET password_hash = ?1 WHERE id = ?2",
+            params![password_hash, id],
+        )?;
+        conn.execute(
+            "DELETE FROM browser_access_tokens WHERE principal_id = ?1",
+            params![id],
+        )?;
+        conn.execute(
+            "DELETE FROM browser_sessions WHERE principal_id = ?1",
+            params![id],
+        )?;
+        Ok(Some(BrowserUser { id }))
+    }
+
+    pub fn issue_browser_tokens(
+        &self,
+        principal_id: &str,
+        access_ttl_secs: i64,
+        refresh_ttl_secs: i64,
+    ) -> Result<(Zeroizing<String>, Zeroizing<String>, Zeroizing<String>)> {
         let (access, access_hash) = generate_token();
         let (refresh, refresh_hash) = generate_token();
         let (csrf, csrf_hash) = generate_token();
         let now = crate::ids::now_ms();
         let conn = self.conn()?;
-        conn.execute("DELETE FROM browser_access_tokens WHERE expires_at <= ?1", params![now])?;
-        conn.execute("DELETE FROM browser_sessions WHERE expires_at <= ?1", params![now])?;
+        conn.execute(
+            "DELETE FROM browser_access_tokens WHERE expires_at <= ?1",
+            params![now],
+        )?;
+        conn.execute(
+            "DELETE FROM browser_sessions WHERE expires_at <= ?1",
+            params![now],
+        )?;
         conn.execute("INSERT INTO browser_access_tokens (token_hash, principal_id, expires_at) VALUES (?1, ?2, ?3)", params![access_hash, principal_id, now + access_ttl_secs * 1000])?;
         conn.execute("INSERT INTO browser_sessions (token_hash, principal_id, csrf_hash, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![refresh_hash, principal_id, csrf_hash, now + refresh_ttl_secs * 1000, now])?;
         Ok((access, refresh, csrf))
     }
 
-    pub fn rotate_browser_session(&self, refresh: &str, csrf: &str, access_ttl_secs: i64, refresh_ttl_secs: i64) -> Result<Option<(String, Zeroizing<String>, Zeroizing<String>, Zeroizing<String>)>> {
-        let hash = hash_token(refresh); let csrf_hash = hash_token(csrf); let now = crate::ids::now_ms();
+    pub fn rotate_browser_session(
+        &self,
+        refresh: &str,
+        csrf: &str,
+        access_ttl_secs: i64,
+        refresh_ttl_secs: i64,
+    ) -> Result<
+        Option<(
+            String,
+            Zeroizing<String>,
+            Zeroizing<String>,
+            Zeroizing<String>,
+        )>,
+    > {
+        let hash = hash_token(refresh);
+        let csrf_hash = hash_token(csrf);
+        let now = crate::ids::now_ms();
         let conn = self.conn()?;
         let principal_id: Option<String> = conn.query_row("SELECT principal_id FROM browser_sessions WHERE token_hash = ?1 AND csrf_hash = ?2 AND expires_at > ?3", params![hash, csrf_hash, now], |r| r.get(0)).ok();
-        let Some(principal_id) = principal_id else { return Ok(None); };
-        conn.execute("DELETE FROM browser_sessions WHERE token_hash = ?1", params![hash])?;
+        let Some(principal_id) = principal_id else {
+            return Ok(None);
+        };
+        conn.execute(
+            "DELETE FROM browser_sessions WHERE token_hash = ?1",
+            params![hash],
+        )?;
         drop(conn);
-        let (access, new_refresh, new_csrf) = self.issue_browser_tokens(&principal_id, access_ttl_secs, refresh_ttl_secs)?;
+        let (access, new_refresh, new_csrf) =
+            self.issue_browser_tokens(&principal_id, access_ttl_secs, refresh_ttl_secs)?;
         Ok(Some((principal_id, access, new_refresh, new_csrf)))
     }
 
@@ -277,10 +352,21 @@ impl System {
         Ok(n > 0)
     }
 
-    pub fn lookup_browser_access_token(&self, token: &str) -> Result<Option<crate::auth::Principal>> {
-        let conn = self.conn()?; let now = crate::ids::now_ms(); let hash = hash_token(token);
+    pub fn lookup_browser_access_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<crate::auth::Principal>> {
+        let conn = self.conn()?;
+        let now = crate::ids::now_ms();
+        let hash = hash_token(token);
         let r = conn.query_row("SELECT p.id, p.name, p.is_admin, p.disabled FROM browser_access_tokens t JOIN principals p ON p.id=t.principal_id WHERE t.token_hash=?1 AND t.expires_at>?2", params![hash, now], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,i64>(2)? != 0, r.get::<_,i64>(3)? != 0)));
-        match r { Ok((id,name,is_admin,disabled)) if !disabled => Ok(Some(crate::auth::Principal {id,name,is_admin})), Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), Err(e) => Err(e.into()) }
+        match r {
+            Ok((id, name, is_admin, disabled)) if !disabled => {
+                Ok(Some(crate::auth::Principal { id, name, is_admin }))
+            }
+            Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Soft-disable a principal. Returns false if no such principal.
