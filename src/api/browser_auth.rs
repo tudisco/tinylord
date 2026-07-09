@@ -28,7 +28,9 @@ fn refresh_cookie(value: &str, max_age: i64, secure: bool) -> HeaderValue {
 
 fn csrf_cookie(value: &str, max_age: i64, secure: bool) -> HeaderValue {
     let secure = if secure { "; Secure" } else { "" };
-    HeaderValue::from_str(&format!("tinylord_csrf={value}; Path=/v1/auth; SameSite=Strict; Max-Age={max_age}{secure}")).expect("cookie is valid")
+    // The application is served from `/`, so its module must be able to read
+    // this non-HttpOnly double-submit token after a page reload.
+    HeaderValue::from_str(&format!("tinylord_csrf={value}; Path=/; SameSite=Strict; Max-Age={max_age}{secure}")).expect("cookie is valid")
 }
 
 fn clear_refresh_cookie(secure: bool) -> HeaderValue { refresh_cookie("", 0, secure) }

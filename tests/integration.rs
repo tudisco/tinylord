@@ -305,6 +305,7 @@ async fn browser_login_refresh_logout_and_grants() {
     assert_eq!(login.status(), 200);
     let refresh = set_cookie(login.headers(), "tinylord_refresh");
     let csrf_cookie = set_cookie(login.headers(), "tinylord_csrf");
+    assert!(login.headers().get_all("set-cookie").iter().any(|value| value.to_str().is_ok_and(|cookie| cookie.starts_with("tinylord_csrf=") && cookie.contains("Path=/;"))));
     let body: serde_json::Value = login.json().await.unwrap();
     let access = body["access_token"].as_str().unwrap();
     let me: serde_json::Value = c.get(format!("{}/v1/auth/me", s.base)).bearer_auth(access).send().await.unwrap().json().await.unwrap();
