@@ -12,7 +12,8 @@ export class TinyLord {
   constructor({ baseUrl = "", fetch: fetchImpl = globalThis.fetch, readCookie = browserCookie } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetch is required");
     this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.fetch = fetchImpl;
+    // Browser fetch is a Web API method and must keep the Window receiver.
+    this.fetch = (input, init) => fetchImpl.call(globalThis, input, init);
     this.readCookie = readCookie;
     this.accessToken = null;
     this.csrfToken = null;

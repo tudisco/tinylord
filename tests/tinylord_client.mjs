@@ -62,6 +62,16 @@ const restored = TinyLord.connect({
 });
 assert.equal((await restored.refresh()).access_token, "restored-access-token");
 
+let fetchReceiver;
+const receiverClient = TinyLord.connect({
+  fetch: function () {
+    fetchReceiver = this;
+    return Response.json({ ok: true });
+  },
+});
+await receiverClient._request("/receiver");
+assert.equal(fetchReceiver, globalThis);
+
 await assert.rejects(
   () => client._request("/missing"),
   (error) => error instanceof TinyLordError && error.status === 404 && error.code === "not_found",
