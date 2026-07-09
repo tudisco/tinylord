@@ -20,8 +20,8 @@ use axum::{Json, Router};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 /// Application state shared by all handlers. Cheap to clone.
 #[derive(Clone)]
@@ -63,11 +63,7 @@ impl AppState {
     /// NOT implicitly granted data access (§6).
     pub async fn authorize(&self, principal: &Principal, db: &str, needed: Role) -> ApiResult<()> {
         crate::ids::require_valid_name("database", db)?;
-        if !self
-            .system
-            .database_exists(db)
-            .map_err(ApiError::internal)?
-        {
+        if !self.system.database_exists(db).map_err(ApiError::internal)? {
             return Err(ApiError::not_found("database not found"));
         }
         let role = self
@@ -86,11 +82,7 @@ impl AppState {
     /// Authorize the snapshot operation: global admin OR per-db `admin` (§7.2).
     pub async fn authorize_snapshot(&self, principal: &Principal, db: &str) -> ApiResult<()> {
         crate::ids::require_valid_name("database", db)?;
-        if !self
-            .system
-            .database_exists(db)
-            .map_err(ApiError::internal)?
-        {
+        if !self.system.database_exists(db).map_err(ApiError::internal)? {
             return Err(ApiError::not_found("database not found"));
         }
         if principal.is_admin {
@@ -103,20 +95,14 @@ impl AppState {
         if role == Some(Role::Admin) {
             Ok(())
         } else {
-            Err(ApiError::forbidden(
-                "requires global admin or 'admin' on database",
-            ))
+            Err(ApiError::forbidden("requires global admin or 'admin' on database"))
         }
     }
 
     /// Open (or reuse) a database handle after verifying it is registered.
     pub async fn open_db(&self, db: &str) -> ApiResult<Arc<DbHandle>> {
         crate::ids::require_valid_name("database", db)?;
-        if !self
-            .system
-            .database_exists(db)
-            .map_err(ApiError::internal)?
-        {
+        if !self.system.database_exists(db).map_err(ApiError::internal)? {
             return Err(ApiError::not_found("database not found"));
         }
         self.registry.get_or_open(db).await
@@ -143,13 +129,15 @@ pub fn build_router(state: AppState) -> Router {
             post(admin::create_database).get(admin::list_databases),
         )
         .route("/v1/admin/databases/{db}", delete(admin::delete_database))
-        .route("/v1/admin/databases/{db}/snapshot", post(admin::snapshot))
+        .route(
+            "/v1/admin/databases/{db}/snapshot",
+            post(admin::snapshot),
+        )
         .route("/v1/admin/principals", post(admin::create_principal))
         .route(
-            "/v1/admin/principals/password",
-            post(admin::reset_browser_password),
+            "/v1/admin/principals/{id}",
+            delete(admin::delete_principal),
         )
-        .route("/v1/admin/principals/{id}", delete(admin::delete_principal))
         .route(
             "/v1/admin/grants",
             post(admin::create_grant).delete(admin::delete_grant),
@@ -207,35 +195,14 @@ pub fn with_static_files(app: Router, directory: std::path::PathBuf, spa_fallbac
     }
 }
 
-async fn api_not_found() -> ApiError {
-    ApiError::not_found("API route not found")
-}
+async fn api_not_found() -> ApiError { ApiError::not_found("API route not found") }
 
 #[derive(Default)]
-pub struct LoginGuard {
-    attempts: std::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
-}
+pub struct LoginGuard { attempts: std::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>> }
 impl LoginGuard {
-    pub fn check(&self, key: &str) -> bool {
-        let mut m = self.attempts.lock().expect("login guard lock");
-        let e = m
-            .entry(key.to_string())
-            .or_insert((0, std::time::Instant::now()));
-        if e.1.elapsed() >= std::time::Duration::from_secs(60) {
-            *e = (0, std::time::Instant::now());
-        }
-        e.0 < 5
-    }
-    pub fn fail(&self, key: &str) {
-        let mut m = self.attempts.lock().expect("login guard lock");
-        let e = m
-            .entry(key.to_string())
-            .or_insert((0, std::time::Instant::now()));
-        e.0 += 1;
-    }
-    pub fn success(&self, key: &str) {
-        self.attempts.lock().expect("login guard lock").remove(key);
-    }
+    pub fn check(&self, key: &str) -> bool { let mut m = self.attempts.lock().expect("login guard lock"); let e = m.entry(key.to_string()).or_insert((0, std::time::Instant::now())); if e.1.elapsed() >= std::time::Duration::from_secs(60) { *e = (0, std::time::Instant::now()); } e.0 < 5 }
+    pub fn fail(&self, key: &str) { let mut m = self.attempts.lock().expect("login guard lock"); let e = m.entry(key.to_string()).or_insert((0, std::time::Instant::now())); e.0 += 1; }
+    pub fn success(&self, key: &str) { self.attempts.lock().expect("login guard lock").remove(key); }
 }
 
 fn build_cors(cfg: &CorsConfig) -> CorsLayer {
@@ -255,7 +222,12 @@ fn build_cors(cfg: &CorsConfig) -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods(vec![Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_methods(vec![
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+        ])
         .allow_headers(vec![
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
@@ -325,9 +297,6 @@ fn openapi_doc() -> serde_json::Value {
             },
             "/v1/admin/principals": {
                 "post": { "summary": "Create principal (token shown once)", "security": [bearer], "responses": {"201": ok_json} }
-            },
-            "/v1/admin/principals/password": {
-                "post": { "summary": "Reset browser-user password and revoke browser sessions", "security": [bearer], "responses": {"200": ok_json, "404": ok_json} }
             },
             "/v1/admin/principals/{id}": {
                 "delete": { "summary": "Disable principal", "security": [bearer], "responses": {"204": {}} }

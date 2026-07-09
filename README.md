@@ -324,11 +324,6 @@ then grant that returned `id` a database role. This form does not return an
 operator bearer token. Public `POST /v1/auth/register` is disabled unless
 `[auth].public_registration = true`.
 
-An operator can reset a browser user's password with
-`POST /v1/admin/principals/password` and `{ "name", "password" }`. The reset
-revokes that user's browser access and refresh sessions and returns the
-principal ID for grant management.
-
 `POST /v1/auth/login` accepts `{ "username", "password" }` and returns a
 15-minute access token plus a CSRF token. It also sets a rotating, HttpOnly,
 SameSite=Strict refresh cookie and a separate JS-readable, SameSite=Strict CSRF
