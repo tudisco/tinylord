@@ -17,25 +17,18 @@ stay on the server. Put it behind a Cloudflare Tunnel or another HTTPS proxy,
 and a single-page app gets a modest backend without a separate application
 server to build and maintain.
 
-Here is the whole browser-side shape of a tiny todo app:
+The whole client-side shape of a tiny todo app is just this:
 
-```html
-<script type="module">
-  import { TinyLord } from "/tinylord.js";
+```js
+import { TinyLord } from "/tinylord.js";
 
-  const app = TinyLord.connect();
-  await app.login("ada", "correct horse battery staple");
+const app = TinyLord.connect();
+await app.login("ada", "correct horse battery staple");
 
-  const todos = app.collection("ada", "todos");
-  await todos.create({ title: "Buy coffee", done: false });
+const todos = app.collection("ada", "todos");
+await todos.create({ title: "Buy coffee", done: false });
 
-  const { items } = await todos.query({ filter: { done: false } });
-  for (const { doc } of items) {
-    const row = document.createElement("p");
-    row.textContent = doc.title;
-    document.body.append(row);
-  }
-</script>
+const { items } = await todos.query({ filter: { done: false } });
 ```
 
 The server serves the module, keeps the refresh session in an HttpOnly cookie,
