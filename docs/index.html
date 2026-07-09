@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TinyLord — a very small realtime datastore</title>
+<meta name="description" content="TinyLord is a single self-hostable binary that stores JSON, answers queries, streams live changes over SSE, and encrypts everything at rest — one SQLite file per database. No cloud, no vendor, no bloat." />
+<style>
+  /* ============================================================
+     TinyLord — "a royal charter for a very small kingdom"
+     Palette is heraldic: court navy + gold leaf + wax-seal red.
+     Display = system serif (proclamation); body = system sans
+     (plain engineering); mono for the decrees (code).
+     ============================================================ */
+
+  :root {
+    /* dark = candlelit court (primary vibe) */
+    --bg:       #131a2c;
+    --bg-2:     #0f1424;
+    --surface:  #1a2138;
+    --surface-2:#212a45;
+    --ink:      #ece4d0;
+    --muted:    #9aa1ba;
+    --gold:     #d8ad57;
+    --gold-dim: #b8923f;
+    --wax:      #cd5f4c;
+    --wax-ink:  #fbeee6;
+    --line:     rgba(236,228,208,.13);
+    --line-2:   rgba(236,228,208,.08);
+    --shadow:   0 18px 50px -20px rgba(0,0,0,.75);
+    --seal:     #cd5f4c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      /* light = charter on parchment */
+      --bg:       #e9e0c9;
+      --bg-2:     #e2d8bd;
+      --surface:  #f3ecd8;
+      --surface-2:#f7f1e1;
+      --ink:      #2a2416;
+      --muted:    #6c6144;
+      --gold:     #97711d;
+      --gold-dim: #7c5d18;
+      --wax:      #a63f2c;
+      --wax-ink:  #f7ece3;
+      --line:     rgba(42,36,22,.16);
+      --line-2:   rgba(42,36,22,.08);
+      --shadow:   0 18px 46px -22px rgba(60,45,15,.4);
+      --seal:     #a63f2c;
+    }
+  }
+  /* explicit toggle wins over the OS media query, in both directions */
+  :root[data-theme="light"] {
+    --bg:#e9e0c9; --bg-2:#e2d8bd; --surface:#f3ecd8; --surface-2:#f7f1e1;
+    --ink:#2a2416; --muted:#6c6144; --gold:#97711d; --gold-dim:#7c5d18;
+    --wax:#a63f2c; --wax-ink:#f7ece3; --line:rgba(42,36,22,.16);
+    --line-2:rgba(42,36,22,.08); --shadow:0 18px 46px -22px rgba(60,45,15,.4); --seal:#a63f2c;
+  }
+  :root[data-theme="dark"] {
+    --bg:#131a2c; --bg-2:#0f1424; --surface:#1a2138; --surface-2:#212a45;
+    --ink:#ece4d0; --muted:#9aa1ba; --gold:#d8ad57; --gold-dim:#b8923f;
+    --wax:#cd5f4c; --wax-ink:#fbeee6; --line:rgba(236,228,208,.13);
+    --line-2:rgba(236,228,208,.08); --shadow:0 18px 50px -20px rgba(0,0,0,.75); --seal:#cd5f4c;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition: background-color .3s ease, color .3s ease;
+  }
+
+  .serif {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  a { color: var(--gold); text-decoration-color: color-mix(in srgb, var(--gold) 45%, transparent); text-underline-offset: 3px; }
+  a:hover { color: var(--gold-dim); }
+
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; border-radius: 3px; }
+
+  .wrap { width: min(72rem, 100% - 2.5rem); margin-inline: auto; }
+  .prose { max-width: 40rem; }
+
+  /* eyebrow — heraldic small caps, content-true section marks */
+  .eyebrow {
+    font-size: .74rem;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--gold);
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    margin: 0 0 1rem;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 20px; height: 1px; background: var(--gold); opacity: .55;
+  }
+
+  /* ---------- top bar ---------- */
+  header.bar {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line-2);
+  }
+  .bar-in { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 0; }
+  .brand { display: inline-flex; align-items: center; gap: .6rem; font-weight: 700; letter-spacing: .01em; color: var(--ink); text-decoration: none; font-size: 1.15rem; }
+  .brand .crown { width: 26px; height: 26px; color: var(--gold); flex: none; }
+  .brand b { font-weight: 800; }
+  .brand-tiny { opacity: .72; font-weight: 600; }
+  .bar-actions { display: flex; align-items: center; gap: .35rem; }
+  .navlink { color: var(--muted); text-decoration: none; font-size: .95rem; padding: .5rem .7rem; border-radius: 8px; }
+  .navlink:hover { color: var(--ink); background: var(--line-2); }
+  .icon-btn { display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+  .icon-btn:hover { background: var(--line-2); }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; overflow: clip; border-bottom: 1px solid var(--line-2); }
+  .hero-bg { position: absolute; inset: 0; pointer-events: none; display: grid; place-items: center; z-index: 0; }
+  .hero-bg svg { width: min(120%, 60rem); color: var(--gold); opacity: .05; transform: translateY(6%); }
+  .hero-in { position: relative; z-index: 1; padding: clamp(3.5rem, 9vw, 7rem) 0 clamp(3rem, 7vw, 5.5rem); }
+  h1.hero-title {
+    font-weight: 800;
+    font-size: clamp(2.5rem, 6.2vw, 4.6rem);
+    line-height: 1.02;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    margin: 0 0 1.2rem;
+    max-width: 18ch;
+  }
+  h1.hero-title .leaf { color: var(--gold); font-style: italic; }
+  .lede { font-size: clamp(1.05rem, 1.6vw, 1.28rem); color: var(--muted); max-width: 44rem; margin: 0 0 2rem; }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  .cta-row { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; }
+  .btn { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; font-size: 1rem; padding: .8rem 1.25rem; border-radius: 11px; text-decoration: none; border: 1px solid transparent; cursor: pointer; transition: transform .12s ease, filter .2s ease, background-color .2s ease; }
+  .btn:active { transform: translateY(1px); }
+  .btn-seal { background: var(--wax); color: var(--wax-ink); box-shadow: var(--shadow); }
+  .btn-seal:hover { filter: brightness(1.06); color: var(--wax-ink); }
+  .btn-ghost { border-color: var(--line); color: var(--ink); background: transparent; }
+  .btn-ghost:hover { background: var(--line-2); color: var(--ink); }
+
+  .badges { display: flex; flex-wrap: wrap; gap: .5rem .9rem; margin-top: 2.2rem; color: var(--muted); font-size: .9rem; }
+  .badges span { display: inline-flex; align-items: center; gap: .45rem; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); flex: none; }
+
+  /* ---------- generic section ---------- */
+  section { padding: clamp(3.5rem, 8vw, 6rem) 0; }
+  section + section { border-top: 1px solid var(--line-2); }
+  h2.sec { font-weight: 800; font-size: clamp(1.7rem, 3.2vw, 2.4rem); line-height: 1.12; letter-spacing: -.01em; margin: 0 0 1rem; text-wrap: balance; }
+  .sec-lede { color: var(--muted); max-width: 42rem; margin: 0 0 2.5rem; font-size: 1.06rem; }
+
+  /* ---------- the story / lineage ---------- */
+  .story p { max-width: 40rem; color: var(--ink); }
+  .story p + p { margin-top: 1.1rem; }
+  .story .muted { color: var(--muted); }
+  .lineage { display: grid; grid-template-columns: repeat(4, 1fr); gap: .9rem; margin-top: 2.6rem; }
+  .rung { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.15rem 1.15rem 1.25rem; position: relative; }
+  .rung h3 { margin: 0 0 .3rem; font-size: 1.05rem; font-weight: 700; letter-spacing: .01em; }
+  .rung p { margin: 0; font-size: .92rem; color: var(--muted); line-height: 1.55; }
+  .rung .tag { font-size: .68rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 700; display: block; margin-bottom: .55rem; }
+  .rung.crown-rung { background: color-mix(in srgb, var(--gold) 12%, var(--surface)); border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); }
+  .rung.crown-rung h3 { color: var(--gold); display: inline-flex; align-items: center; gap: .4rem; }
+  .rung.crown-rung .tag { color: var(--gold-dim); }
+  .rung.crown-rung p { color: var(--ink); }
+  .rung .cw { width: 16px; height: 16px; }
+
+  /* ---------- powers (features) ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr)); gap: 1rem; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 1.4rem; transition: border-color .2s ease, transform .2s ease, background-color .2s ease; }
+  .card:hover { border-color: color-mix(in srgb, var(--gold) 40%, var(--line)); transform: translateY(-2px); }
+  .card .ico { font-size: 1.5rem; line-height: 1; display: block; margin-bottom: .8rem; }
+  .card h3 { margin: 0 0 .4rem; font-size: 1.08rem; font-weight: 700; }
+  .card p { margin: 0; color: var(--muted); font-size: .96rem; line-height: 1.6; }
+
+  /* ---------- quickstart / decree ---------- */
+  .decree { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
+  .decree-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+  .decree-head .name { display: inline-flex; align-items: center; gap: .55rem; color: var(--muted); font-size: .82rem; letter-spacing: .04em; }
+  .decree-head .name .crown { width: 16px; height: 16px; color: var(--gold); }
+  .copy-btn { border: 1px solid var(--line); background: transparent; color: var(--ink); font-size: .8rem; padding: .35rem .7rem; border-radius: 8px; cursor: pointer; font-family: inherit; }
+  .copy-btn:hover { background: var(--line-2); }
+  pre { margin: 0; padding: 1.2rem 1.25rem; overflow-x: auto; font-size: .875rem; line-height: 1.75; }
+  pre code { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; color: var(--ink); }
+  .cmt { color: var(--muted); }
+  .kw  { color: var(--gold); }
+  .str { color: var(--wax); }
+
+  /* ---------- limits ---------- */
+  .limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem,1fr)); gap: 1rem 1.6rem; }
+  .limit { display: flex; gap: .8rem; align-items: flex-start; }
+  .limit .m { font-size: 1.15rem; line-height: 1.5; flex: none; }
+  .limit b { display: block; font-weight: 700; margin-bottom: .1rem; }
+  .limit span { color: var(--muted); font-size: .95rem; }
+
+  /* ---------- who ---------- */
+  .who { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+  .who-col { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 1.6rem; }
+  .who-col.no { background: transparent; }
+  .who-col h3 { margin: 0 0 1rem; font-size: 1.05rem; display: flex; align-items: center; gap: .5rem; }
+  .who-col ul { margin: 0; padding: 0; list-style: none; display: grid; gap: .7rem; }
+  .who-col li { display: flex; gap: .6rem; align-items: flex-start; color: var(--ink); font-size: .98rem; }
+  .who-col.no li { color: var(--muted); }
+  .who-col li .mk { color: var(--gold); font-weight: 800; flex: none; }
+  .who-col.no li .mk { color: var(--muted); }
+
+  /* ---------- final cta ---------- */
+  .final { text-align: center; }
+  .final .crown-lg { width: 46px; height: 46px; color: var(--gold); margin-bottom: 1rem; }
+  .final h2 { margin: 0 auto 1rem; max-width: 20ch; }
+  .final .cta-row { justify-content: center; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--line-2); padding: 2.5rem 0 3rem; color: var(--muted); font-size: .9rem; }
+  .foot-in { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--gold); }
+
+  @media (max-width: 720px) {
+    .lineage { grid-template-columns: 1fr; }
+    .who { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- reusable crown symbol -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="crown" viewBox="0 0 64 46">
+    <path fill="currentColor" d="M4 40 L10 15 A2.4 2.4 0 1 0 10.05 15 L20 26 L30 6 A2.6 2.6 0 1 0 30.05 6 L34 6 L44 26 L54 15 A2.4 2.4 0 1 0 54.05 15 L60 40 Z"/>
+    <rect fill="currentColor" x="4" y="40" width="56" height="6" rx="2"/>
+  </symbol>
+</svg>
+
+<header class="bar">
+  <div class="wrap bar-in">
+    <a class="brand" href="#top">
+      <svg class="crown" aria-hidden="true"><use href="#crown"/></svg>
+      <span><span class="brand-tiny">Tiny</span><b>Lord</b></span>
+    </a>
+    <nav class="bar-actions">
+      <a class="navlink" href="#why">Why</a>
+      <a class="navlink" href="#powers">Powers</a>
+      <a class="navlink" href="#start">Quick start</a>
+      <a class="navlink" href="https://github.com/tudisco/tinylord">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle light and dark theme" title="Toggle theme">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" id="theme-ico"></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO — the thesis: a regal name on a humble tool -->
+  <div class="hero">
+    <div class="hero-bg" aria-hidden="true"><svg><use href="#crown"/></svg></div>
+    <div class="wrap hero-in">
+      <p class="eyebrow">A very small realtime datastore</p>
+      <h1 class="hero-title serif">Give your little app a backend, not a <span class="leaf">bureaucracy.</span></h1>
+      <p class="lede"><b>TinyLord</b> is a single self-hostable binary that stores JSON, answers queries, streams live changes, and encrypts everything at rest — backed by one SQLite file per database. No cloud account. No vendor. No court of enterprise complexity.</p>
+      <div class="cta-row">
+        <a class="btn btn-seal" href="https://github.com/tudisco/tinylord">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.57.1.78-.25.78-.55v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.2-3.1-.12-.3-.52-1.48.11-3.08 0 0 .98-.31 3.2 1.18a11.1 11.1 0 0 1 5.83 0c2.22-1.5 3.2-1.18 3.2-1.18.63 1.6.23 2.78.11 3.08.75.81 1.2 1.84 1.2 3.1 0 4.43-2.7 5.4-5.28 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.2.66.79.55A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          Claim it on GitHub
+        </a>
+        <a class="btn btn-ghost" href="#start">Read the decree ↓</a>
+      </div>
+      <div class="badges">
+        <span><i class="dot"></i> Single static binary</span>
+        <span><i class="dot"></i> Encrypted by default</span>
+        <span><i class="dot"></i> Realtime over SSE</span>
+        <span><i class="dot"></i> MIT licensed</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- WHY — the story, told straight -->
+  <section id="why" class="story">
+    <div class="wrap">
+      <p class="eyebrow">Why another one?</p>
+      <h2 class="sec serif">Most small apps don't need a kingdom.</h2>
+      <p>A personal tool, a small-business app, a little website — they rarely need enterprise anything. Yet every time, you end up writing <em>another</em> server, another API, another pile of REST endpoints just to keep some data somewhere. It's a chore, and it's the same chore every time.</p>
+      <p class="muted">There are answers. None of them fit a small kingdom:</p>
+
+      <div class="lineage">
+        <div class="rung">
+          <span class="tag">Firebase</span>
+          <h3>Brilliant, borrowed</h3>
+          <p>It just works — but you're renting a corner of someone else's cloud, forever. I didn't want to depend on anybody.</p>
+        </div>
+        <div class="rung">
+          <span class="tag">Appwrite</span>
+          <h3>Self-hosted, but heavy</h3>
+          <p>You can run it yourself, but it arrives with an entire royal court in tow. Enormous bloat for a small job.</p>
+        </div>
+        <div class="rung">
+          <span class="tag">PocketBase</span>
+          <h3>The one I loved</h3>
+          <p>A single binary that just <em>works</em>. I've reached for <a href="https://pocketbase.io">PocketBase</a> a few times and adored it — but even this was more than my little apps needed.</p>
+        </div>
+        <div class="rung crown-rung">
+          <span class="tag">TinyLord</span>
+          <h3><svg class="cw" aria-hidden="true"><use href="#crown"/></svg> Could it be smaller?</h3>
+          <p>So I asked the obvious question — and kept cutting until only the essentials were left. This is the answer.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- POWERS -->
+  <section id="powers">
+    <div class="wrap">
+      <p class="eyebrow">Powers of the realm</p>
+      <h2 class="sec serif">Small, but it rules well.</h2>
+      <p class="sec-lede">Everything a browser-only or small-server app usually needs from a backend — and nothing it doesn't.</p>
+      <div class="grid">
+        <div class="card"><span class="ico">🪶</span><h3>Featherweight</h3><p>One static binary that idles in single-digit megabytes. No runtime to install, no daemon zoo, no orchestration. Drops onto a $5 VPS or a Raspberry Pi.</p></div>
+        <div class="card"><span class="ico">🗄️</span><h3>One file per database</h3><p>Plain SQLite under the hood (SQLCipher, actually). Back it up by copying a file. Move it by copying a file. Nothing arcane.</p></div>
+        <div class="card"><span class="ico">📡</span><h3>Realtime, built in</h3><p>Subscribe to a collection and get live inserts, updates, and deletes over Server-Sent Events. The reason browser-only apps usually need a custom backend — solved.</p></div>
+        <div class="card"><span class="ico">🧩</span><h3>Schemaless documents</h3><p>Store JSON, query it with a small Mongo-ish filter language. No migrations, no schema wrangling, and never any SQL to write from the client.</p></div>
+        <div class="card"><span class="ico">🔒</span><h3>Encrypted by default</h3><p>AES-256 at rest via SQLCipher — data files, snapshots, and the control database. Your key stays server-side; it never touches config, logs, or the API.</p></div>
+        <div class="card"><span class="ico">🎫</span><h3>Tokens &amp; grants</h3><p>Bearer tokens with <span class="mono">read</span> / <span class="mono">write</span> / <span class="mono">admin</span> grants per database. Ship a scoped token to the browser; keep the keys to the kingdom.</p></div>
+        <div class="card"><span class="ico">💾</span><h3>Painless backups</h3><p>One endpoint makes a clean, encrypted snapshot. Pair it with a Litestream sidecar when you want continuous point-in-time recovery.</p></div>
+        <div class="card"><span class="ico">🚫</span><h3>Depends on nobody</h3><p>Self-hosted, no cloud account, no vendor, no lock-in. Your data lives on your machine, encrypted, under your key. That's the whole idea.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- QUICK START -->
+  <section id="start">
+    <div class="wrap">
+      <p class="eyebrow">The decree</p>
+      <h2 class="sec serif">Running in about a minute.</h2>
+      <p class="sec-lede">One binary to start, one token to hand out, and you're storing and streaming data. Here's the whole ceremony.</p>
+      <div class="decree">
+        <div class="decree-head">
+          <span class="name"><svg class="crown" aria-hidden="true"><use href="#crown"/></svg> royal-charter.sh</span>
+          <button class="copy-btn" id="copy" type="button">Copy</button>
+        </div>
+<pre><code id="code"><span class="cmt"># 1 · Start it. One binary, encrypted at rest by default.</span>
+<span class="kw">tinylord</span> serve
+
+<span class="cmt"># 2 · Create a database + a browser-scoped token (admin CLI or API).</span>
+<span class="kw">tinylord</span> db create app
+<span class="kw">tinylord</span> admin create-user --name web
+<span class="kw">tinylord</span> admin grant --user &lt;ID&gt; --db app --role write
+
+<span class="cmt"># 3 · Write a document — no schema, no SQL, no migration.</span>
+<span class="kw">curl</span> -X POST localhost:8090/v1/db/app/collections/notes/documents \
+  -H <span class="str">"Authorization: Bearer $TOKEN"</span> \
+  -d <span class="str">'{"title":"Hello","done":false}'</span>
+
+<span class="cmt"># 4 · Subscribe to live changes over SSE. This is the magic bit.</span>
+<span class="kw">curl</span> -N localhost:8090/v1/db/app/collections/notes/subscribe \
+  -H <span class="str">"Authorization: Bearer $TOKEN"</span></code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIMITS — honest -->
+  <section id="limits">
+    <div class="wrap">
+      <p class="eyebrow">Where the kingdom ends</p>
+      <h2 class="sec serif">A small lord, honestly.</h2>
+      <p class="sec-lede">TinyLord is deliberately tiny. Knowing what it <em>won't</em> do is how you know it's right for you.</p>
+      <div class="limits-grid">
+        <div class="limit"><span class="m">👑</span><div><b>One throne, one process</b><span>No clustering, replication, or multi-node. One process per database file — simple by design.</span></div></div>
+        <div class="limit"><span class="m">📨</span><div><b>Best-effort realtime</b><span>Live updates are fast but not guaranteed delivery. Perfect for UIs; not for a financial ledger.</span></div></div>
+        <div class="limit"><span class="m">🔍</span><div><b>A small query language</b><span>Equality, comparisons, <span class="mono">$in</span>, and one <span class="mono">$or</span>. No joins, aggregation, <span class="mono">$regex</span>, or full-text.</span></div></div>
+        <div class="limit"><span class="m">🖥️</span><div><b>No admin UI</b><span>CLI and API only — that's the point. Bring your own dashboard if you want one.</span></div></div>
+        <div class="limit"><span class="m">🔐</span><div><b>No built-in TLS</b><span>Put it behind a reverse proxy like Caddy or nginx for HTTPS. It expects to sit behind one.</span></div></div>
+        <div class="limit"><span class="m">🏰</span><div><b>Small kingdoms only</b><span>Serving millions across regions? You've outgrown TinyLord. Go hire an empire — with our blessing.</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHO -->
+  <section id="who">
+    <div class="wrap">
+      <p class="eyebrow">Who should claim the throne</p>
+      <h2 class="sec serif">Perfect for small rulers.</h2>
+      <div class="who">
+        <div class="who-col yes">
+          <h3><svg class="cw" width="18" height="18" style="color:var(--gold)" aria-hidden="true"><use href="#crown"/></svg> A perfect fit if you're…</h3>
+          <ul>
+            <li><span class="mk">✦</span> A solo dev or hobbyist who just needs somewhere to put data.</li>
+            <li><span class="mk">✦</span> Building a small-business tool or internal app without a cloud bill.</li>
+            <li><span class="mk">✦</span> Shipping a browser-only or static site that needs live data — no backend to stand up.</li>
+            <li><span class="mk">✦</span> Prototyping or at a hackathon, where "another backend" is the last thing you want to build.</li>
+            <li><span class="mk">✦</span> Privacy-minded and want encryption at rest with zero vendor dependency.</li>
+          </ul>
+        </div>
+        <div class="who-col no">
+          <h3>Look elsewhere if you need…</h3>
+          <ul>
+            <li><span class="mk">✕</span> Multi-region, horizontally-scaled, millions-of-users infrastructure.</li>
+            <li><span class="mk">✕</span> Heavy relational modeling with joins and complex transactions.</li>
+            <li><span class="mk">✕</span> Guaranteed, exactly-once realtime delivery.</li>
+            <li><span class="mk">✕</span> A polished admin dashboard out of the box.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINAL CTA -->
+  <section class="final">
+    <div class="wrap">
+      <svg class="crown-lg" aria-hidden="true"><use href="#crown"/></svg>
+      <h2 class="sec serif">Claim your very small kingdom.</h2>
+      <p class="sec-lede" style="margin-inline:auto">Free and open source under the MIT license. One binary away.</p>
+      <div class="cta-row">
+        <a class="btn btn-seal" href="https://github.com/tudisco/tinylord">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.57.1.78-.25.78-.55v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.2-3.1-.12-.3-.52-1.48.11-3.08 0 0 .98-.31 3.2 1.18a11.1 11.1 0 0 1 5.83 0c2.22-1.5 3.2-1.18 3.2-1.18.63 1.6.23 2.78.11 3.08.75.81 1.2 1.84 1.2 3.1 0 4.43-2.7 5.4-5.28 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.2.66.79.55A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          Get TinyLord
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/tudisco/tinylord#readme">Read the docs</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot-in">
+    <span>Built with Rust &amp; SQLite. Ruled by no one but you.</span>
+    <span><a href="https://github.com/tudisco/tinylord">GitHub</a> · MIT © 2026 tudisco.biz</span>
+  </div>
+</footer>
+
+<script>
+  // Theme toggle: persists choice, stamps data-theme (wins over OS preference).
+  (function () {
+    var root = document.documentElement;
+    var icon = document.getElementById('theme-ico');
+    var SUN = '<circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>';
+    var MOON = '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.2 6.2 0 0 0 10.5 10.5Z"/>';
+    function current() {
+      return root.getAttribute('data-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    }
+    function paint() { icon.innerHTML = current() === 'dark' ? SUN : MOON; }
+    try {
+      var saved = localStorage.getItem('tinylord-theme');
+      if (saved) root.setAttribute('data-theme', saved);
+    } catch (e) {}
+    paint();
+    document.getElementById('theme').addEventListener('click', function () {
+      var next = current() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('tinylord-theme', next); } catch (e) {}
+      paint();
+    });
+  })();
+
+  // Copy the quick-start decree.
+  (function () {
+    var btn = document.getElementById('copy');
+    var code = document.getElementById('code');
+    btn.addEventListener('click', function () {
+      var text = code.innerText;
+      navigator.clipboard.writeText(text).then(function () {
+        var old = btn.textContent;
+        btn.textContent = 'Copied ✓';
+        setTimeout(function () { btn.textContent = old; }, 1600);
+      });
+    });
+  })();
+</script>
+</body>
+</html>
