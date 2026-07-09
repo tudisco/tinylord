@@ -245,6 +245,22 @@ impl System {
         match r { Ok(v) => Ok(Some(v)), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), Err(e) => Err(e.into()) }
     }
 
+    /// Reset a browser user's password and revoke every browser-issued session.
+    /// Operator tokens remain independent from browser credentials.
+    pub fn reset_browser_password(&self, username: &str, password_hash: &str) -> Result<Option<BrowserUser>> {
+        let conn = self.conn()?;
+        let id: Option<String> = conn.query_row(
+            "SELECT id FROM principals WHERE username = ?1 AND disabled = 0 AND is_admin = 0",
+            params![username],
+            |r| r.get(0),
+        ).ok();
+        let Some(id) = id else { return Ok(None); };
+        conn.execute("UPDATE principals SET password_hash = ?1 WHERE id = ?2", params![password_hash, id])?;
+        conn.execute("DELETE FROM browser_access_tokens WHERE principal_id = ?1", params![id])?;
+        conn.execute("DELETE FROM browser_sessions WHERE principal_id = ?1", params![id])?;
+        Ok(Some(BrowserUser { id }))
+    }
+
     pub fn issue_browser_tokens(&self, principal_id: &str, access_ttl_secs: i64, refresh_ttl_secs: i64) -> Result<(Zeroizing<String>, Zeroizing<String>, Zeroizing<String>)> {
         let (access, access_hash) = generate_token();
         let (refresh, refresh_hash) = generate_token();

@@ -134,6 +134,7 @@ pub fn build_router(state: AppState) -> Router {
             post(admin::snapshot),
         )
         .route("/v1/admin/principals", post(admin::create_principal))
+        .route("/v1/admin/principals/password", post(admin::reset_browser_password))
         .route(
             "/v1/admin/principals/{id}",
             delete(admin::delete_principal),
@@ -297,6 +298,9 @@ fn openapi_doc() -> serde_json::Value {
             },
             "/v1/admin/principals": {
                 "post": { "summary": "Create principal (token shown once)", "security": [bearer], "responses": {"201": ok_json} }
+            },
+            "/v1/admin/principals/password": {
+                "post": { "summary": "Reset browser-user password and revoke browser sessions", "security": [bearer], "responses": {"200": ok_json, "404": ok_json} }
             },
             "/v1/admin/principals/{id}": {
                 "delete": { "summary": "Disable principal", "security": [bearer], "responses": {"204": {}} }

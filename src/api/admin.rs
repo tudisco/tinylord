@@ -98,6 +98,29 @@ pub async fn create_principal(
     ))
 }
 
+#[derive(Deserialize)]
+pub struct ResetBrowserPasswordBody {
+    name: String,
+    password: String,
+}
+
+/// Reset a browser user's password. This is intentionally admin-only and
+/// invalidates existing browser access and refresh tokens for that user.
+pub async fn reset_browser_password(
+    State(state): State<AppState>,
+    _admin: AdminPrincipal,
+    Json(body): Json<ResetBrowserPasswordBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !super::browser_auth::valid_username(&body.name) {
+        return Err(ApiError::validation("username must be 3 to 64 letters, numbers, '_' or '-'"));
+    }
+    let hash = super::browser_auth::hash_password(&body.password)?;
+    let Some(user) = state.system.reset_browser_password(&body.name, &hash).map_err(ApiError::internal)? else {
+        return Err(ApiError::not_found("browser user not found"));
+    };
+    Ok(Json(serde_json::json!({ "id": user.id, "name": body.name })))
+}
+
 pub async fn delete_principal(
     State(state): State<AppState>,
     _admin: AdminPrincipal,
