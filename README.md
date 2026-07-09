@@ -1,20 +1,41 @@
 # tinylord
 
-A tiny, self-hostable, **schemaless realtime document datastore** — one static
-binary backed by **one SQLite file per logical database**. It gives browser-only
-apps the two things that otherwise force a custom backend:
+TinyLord is a small, self-hosted application server for single-page HTML apps.
+Run one binary, point a hostname at it, and your app can serve its own files,
+sign users in, store JSON, and receive live updates from the same origin.
 
-- **Live updates** over Server-Sent Events (best-effort realtime subscriptions).
-- **A place to keep JSON documents** with a Mongo-ish query API — no SQL ever
-  exposed to clients, no server to provision per app.
+It is built for the moment when a static app has outgrown localStorage but does
+not need a large backend platform. TinyLord gives that app:
 
-It is deliberately smaller than PocketBase: headless (no UI), a document CRUD +
-query API, SSE change streams, minimal admin, consistent-snapshot backup, and
-**encryption at rest via SQLCipher, on by default**.
+- A fixed, loopback static-app listener for its HTML, JavaScript, and assets.
+- Username/password login and a small browser client at `/tinylord.js`.
+- Per-user database grants, a schemaless JSON document API, and realtime SSE.
+- Encrypted SQLite storage, backups, and a single native binary to operate.
 
-Storage is encrypted with AES-256 (SQLCipher). Data files, snapshots, and the
-control database are all encrypted; the key is server-side only and never
-transits config, logs, or the API.
+No SQL is exposed to the browser. The encryption key and operator credentials
+stay on the server. Put it behind a Cloudflare Tunnel or another HTTPS proxy,
+and a single-page app gets a modest backend without a separate application
+server to build and maintain.
+
+## Why TinyLord?
+
+TinyLord exists for small, self-hosted applications that need a dependable
+place for documents, authentication, and realtime updates without giving up
+ownership of the server or data.
+
+Firebase is excellent, but it is a hosted service: the backend, deployment
+shape, and operational boundaries are not yours to own in the same direct way.
+[Appwrite](https://appwrite.io/) is a capable open-source platform, but it
+solves a much broader problem than a small private application needs. Its
+feature set and operational footprint were more than this project wanted.
+
+[PocketBase](https://pocketbase.io/) was the clearest inspiration. Its compact
+single-binary approach, straightforward API, and focus on getting an app
+working quickly are exactly the qualities TinyLord aims to preserve. TinyLord
+takes a narrower path: a small Rust binary, one encrypted SQLite file per
+logical database, a schemaless document API, and a deliberately modest browser
+client. The goal is not to replace PocketBase, Appwrite, or Firebase; it is to
+be the smaller, faster-to-understand choice when those capabilities are enough.
 
 ---
 
@@ -49,28 +70,6 @@ connection on one thread, fed by a channel — so `SQLITE_BUSY` lock contention
 cannot happen, and the writer (which already holds each document) is the single
 place that records the change log and emits realtime events after commit. Reads
 use a small pool of read-only connections that run concurrently under WAL.
-
----
-
-## Why TinyLord?
-
-TinyLord exists for small, self-hosted applications that need a dependable
-place for documents, authentication, and realtime updates without giving up
-ownership of the server or data.
-
-Firebase is excellent, but it is a hosted service: the backend, deployment
-shape, and operational boundaries are not yours to own in the same direct way.
-[Appwrite](https://appwrite.io/) is a capable open-source platform, but it
-solves a much broader problem than a small private application needs. Its
-feature set and operational footprint were more than this project wanted.
-
-[PocketBase](https://pocketbase.io/) was the clearest inspiration. Its compact
-single-binary approach, straightforward API, and focus on getting an app
-working quickly are exactly the qualities TinyLord aims to preserve. TinyLord
-takes a narrower path: a small Rust binary, one encrypted SQLite file per
-logical database, a schemaless document API, and a deliberately modest browser
-client. The goal is not to replace PocketBase, Appwrite, or Firebase; it is to
-be the smaller, faster-to-understand choice when those capabilities are enough.
 
 ---
 
