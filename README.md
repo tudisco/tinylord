@@ -21,6 +21,7 @@ transits config, logs, or the API.
 ## Table of contents
 
 - [Architecture in one paragraph](#architecture-in-one-paragraph)
+- [Why TinyLord?](#why-tinylord)
 - [Build](#build)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -48,6 +49,28 @@ connection on one thread, fed by a channel — so `SQLITE_BUSY` lock contention
 cannot happen, and the writer (which already holds each document) is the single
 place that records the change log and emits realtime events after commit. Reads
 use a small pool of read-only connections that run concurrently under WAL.
+
+---
+
+## Why TinyLord?
+
+TinyLord exists for small, self-hosted applications that need a dependable
+place for documents, authentication, and realtime updates without giving up
+ownership of the server or data.
+
+Firebase is excellent, but it is a hosted service: the backend, deployment
+shape, and operational boundaries are not yours to own in the same direct way.
+[Appwrite](https://appwrite.io/) is a capable open-source platform, but it
+solves a much broader problem than a small private application needs. Its
+feature set and operational footprint were more than this project wanted.
+
+[PocketBase](https://pocketbase.io/) was the clearest inspiration. Its compact
+single-binary approach, straightforward API, and focus on getting an app
+working quickly are exactly the qualities TinyLord aims to preserve. TinyLord
+takes a narrower path: a small Rust binary, one encrypted SQLite file per
+logical database, a schemaless document API, and a deliberately modest browser
+client. The goal is not to replace PocketBase, Appwrite, or Firebase; it is to
+be the smaller, faster-to-understand choice when those capabilities are enough.
 
 ---
 
