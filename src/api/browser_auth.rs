@@ -42,7 +42,9 @@ fn response(access: &str, csrf: &str, refresh: &str, state: &AppState) -> impl I
 }
 
 pub async fn register(State(state): State<AppState>, Json(body): Json<Credentials>) -> ApiResult<impl IntoResponse> {
-    if !state.config.auth.public_registration { return Err(ApiError::forbidden("public registration is disabled")); }
+    if !state.system.registration_enabled(state.config.auth.public_registration).map_err(ApiError::internal)? {
+        return Err(ApiError::forbidden("public registration is disabled"));
+    }
     create_and_login(&state, body).await
 }
 

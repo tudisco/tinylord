@@ -36,6 +36,8 @@ allowed_origins = ["http://localhost:5173"]
 [auth]
 # Browser self-registration is off by default. Create browser users with the
 # admin API instead, or deliberately enable this for a private deployment.
+# A global admin may later persistently override this default through
+# PUT /v1/admin/auth/registration.
 public_registration = false
 # Access tokens are returned in JSON; refresh sessions are HttpOnly cookies.
 access_token_ttl_secs  = 900

@@ -326,6 +326,18 @@ async fn browser_login_refresh_logout_and_grants() {
         assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "delegate", "password": "wrong-password" })).send().await.unwrap().status(), 401);
     }
     assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "delegate", "password": "wrong-password" })).send().await.unwrap().status(), 429);
+
+    let registration: serde_json::Value = c.get(format!("{}/v1/admin/auth/registration", s.base)).bearer_auth(&s.admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(registration["enabled"], true);
+    assert_eq!(c.put(format!("{}/v1/admin/auth/registration", s.base)).bearer_auth(&s.admin).json(&serde_json::json!({ "enabled": false })).send().await.unwrap().status(), 200);
+    assert_eq!(c.post(format!("{}/v1/auth/register", s.base)).json(&serde_json::json!({ "username": "blocked-user", "password": "long-enough-password" })).send().await.unwrap().status(), 403);
+    assert_eq!(c.put(format!("{}/v1/admin/auth/registration", s.base)).bearer_auth(&s.admin).json(&serde_json::json!({ "enabled": true })).send().await.unwrap().status(), 200);
+
+    let reset_login = c.post(format!("{}/v1/auth/register", s.base)).json(&serde_json::json!({ "username": "reset-user", "password": "long-enough-password" })).send().await.unwrap();
+    let reset_access = reset_login.json::<serde_json::Value>().await.unwrap()["access_token"].as_str().unwrap().to_string();
+    assert_eq!(c.post(format!("{}/v1/admin/principals/password", s.base)).bearer_auth(&s.admin).json(&serde_json::json!({ "name": "reset-user", "password": "replacement-password" })).send().await.unwrap().status(), 200);
+    assert_eq!(c.get(format!("{}/v1/auth/me", s.base)).bearer_auth(&reset_access).send().await.unwrap().status(), 401);
+    assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "reset-user", "password": "replacement-password" })).send().await.unwrap().status(), 200);
 }
 
 fn set_cookie(headers: &reqwest::header::HeaderMap, name: &str) -> String {

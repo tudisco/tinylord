@@ -165,7 +165,7 @@ impl System {
             conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS ux_principals_username ON principals(username) WHERE username IS NOT NULL;")?;
         }
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS browser_access_tokens (token_hash TEXT PRIMARY KEY, principal_id TEXT NOT NULL, expires_at INTEGER NOT NULL);\n             CREATE INDEX IF NOT EXISTS ix_browser_access_expiry ON browser_access_tokens(expires_at);\n             CREATE TABLE IF NOT EXISTS browser_sessions (token_hash TEXT PRIMARY KEY, principal_id TEXT NOT NULL, csrf_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);\n             CREATE INDEX IF NOT EXISTS ix_browser_sessions_expiry ON browser_sessions(expires_at);",
+            "CREATE TABLE IF NOT EXISTS browser_access_tokens (token_hash TEXT PRIMARY KEY, principal_id TEXT NOT NULL, expires_at INTEGER NOT NULL);\n             CREATE INDEX IF NOT EXISTS ix_browser_access_expiry ON browser_access_tokens(expires_at);\n             CREATE TABLE IF NOT EXISTS browser_sessions (token_hash TEXT PRIMARY KEY, principal_id TEXT NOT NULL, csrf_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);\n             CREATE INDEX IF NOT EXISTS ix_browser_sessions_expiry ON browser_sessions(expires_at);\n             CREATE TABLE IF NOT EXISTS auth_settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
         )?;
         Ok(())
     }
@@ -259,6 +259,30 @@ impl System {
         conn.execute("DELETE FROM browser_access_tokens WHERE principal_id = ?1", params![id])?;
         conn.execute("DELETE FROM browser_sessions WHERE principal_id = ?1", params![id])?;
         Ok(Some(BrowserUser { id }))
+    }
+
+    /// The stored operator override wins over the file-configured default.
+    pub fn registration_enabled(&self, default: bool) -> Result<bool> {
+        let conn = self.conn()?;
+        let override_value: Option<i64> = conn
+            .query_row(
+                "SELECT value FROM auth_settings WHERE key = 'public_registration'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(override_value.map(|v| v != 0).unwrap_or(default))
+    }
+
+    /// Persist an operator-selected public-registration policy across restarts.
+    pub fn set_registration_enabled(&self, enabled: bool) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO auth_settings (key, value) VALUES ('public_registration', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![enabled as i64],
+        )?;
+        Ok(())
     }
 
     pub fn issue_browser_tokens(&self, principal_id: &str, access_ttl_secs: i64, refresh_ttl_secs: i64) -> Result<(Zeroizing<String>, Zeroizing<String>, Zeroizing<String>)> {

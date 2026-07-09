@@ -136,6 +136,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/admin/principals", post(admin::create_principal))
         .route("/v1/admin/principals/password", post(admin::reset_browser_password))
         .route(
+            "/v1/admin/auth/registration",
+            get(admin::registration_status).put(admin::set_registration),
+        )
+        .route(
             "/v1/admin/principals/{id}",
             delete(admin::delete_principal),
         )

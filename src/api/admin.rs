@@ -121,6 +121,36 @@ pub async fn reset_browser_password(
     Ok(Json(serde_json::json!({ "id": user.id, "name": body.name })))
 }
 
+#[derive(Deserialize)]
+pub struct RegistrationBody {
+    enabled: bool,
+}
+
+/// Inspect the effective public-registration policy.
+pub async fn registration_status(
+    State(state): State<AppState>,
+    _admin: AdminPrincipal,
+) -> ApiResult<impl IntoResponse> {
+    let enabled = state
+        .system
+        .registration_enabled(state.config.auth.public_registration)
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "enabled": enabled })))
+}
+
+/// Persistently enable or disable public browser-user registration.
+pub async fn set_registration(
+    State(state): State<AppState>,
+    _admin: AdminPrincipal,
+    Json(body): Json<RegistrationBody>,
+) -> ApiResult<impl IntoResponse> {
+    state
+        .system
+        .set_registration_enabled(body.enabled)
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "enabled": body.enabled })))
+}
+
 pub async fn delete_principal(
     State(state): State<AppState>,
     _admin: AdminPrincipal,

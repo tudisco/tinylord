@@ -322,7 +322,19 @@ the authorization source of truth. An operator can create one through
 `POST /v1/admin/principals` with `{ "name": "delegate", "password": "..." }`,
 then grant that returned `id` a database role. This form does not return an
 operator bearer token. Public `POST /v1/auth/register` is disabled unless
-`[auth].public_registration = true`.
+`[auth].public_registration = true`. That configuration value is the default;
+a global admin can inspect or persistently change the live policy without a
+restart:
+
+```bash
+# Inspect the effective policy.
+curl -s "$BASE/v1/admin/auth/registration" -H "Authorization: Bearer $ADMIN"
+
+# Deliberately open or close public signup.
+curl -s -X PUT "$BASE/v1/admin/auth/registration" \
+  -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"enabled":true}'
+```
 
 An operator can reset a browser user's password with
 `POST /v1/admin/principals/password` and `{ "name", "password" }`. The reset
@@ -347,6 +359,16 @@ Tunnel origin). Set it to `false` only for local HTTP development.
 SSE still uses bearer authorization. Browser clients that need realtime should
 use a `fetch()` streaming client with the short-lived access token; do not put
 tokens in query strings.
+
+### Planned: Google sign-in
+
+Google sign-in is a practical phase-two addition. It will use OAuth 2.0
+authorization-code flow with PKCE, strict `state` and nonce validation, and
+server-side verification of Google identity tokens. Each verified Google
+subject will map to the same TinyLord principal and grant model used by password
+users. It requires an operator-configured Google client ID, client secret, and
+allowed redirect URL; it should not be enabled until those values and account
+linking behavior are explicitly configured.
 
 ### Browser client module
 
