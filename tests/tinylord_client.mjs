@@ -47,6 +47,21 @@ const event = (await stream.next()).value;
 assert.deepEqual(event, { type: "change", id: "7", data: { title: "Ship it" } });
 await stream.return();
 
+const restored = TinyLord.connect({
+  readCookie: (name) => name === "tinylord_csrf" ? "csrf-from-cookie" : null,
+  fetch: async (url, options = {}) => {
+    assert.equal(url, "/v1/auth/refresh");
+    assert.equal(options.headers.get("x-csrf-token"), "csrf-from-cookie");
+    return Response.json({
+      access_token: "restored-access-token",
+      csrf_token: "rotated-csrf-token",
+      token_type: "Bearer",
+      expires_in: 900,
+    });
+  },
+});
+assert.equal((await restored.refresh()).access_token, "restored-access-token");
+
 await assert.rejects(
   () => client._request("/missing"),
   (error) => error instanceof TinyLordError && error.status === 404 && error.code === "not_found",

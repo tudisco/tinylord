@@ -303,10 +303,10 @@ async fn browser_login_refresh_logout_and_grants() {
     let login = c.post(format!("{}/v1/auth/register", s.base))
         .json(&serde_json::json!({ "username": "delegate", "password": "long-enough-password" })).send().await.unwrap();
     assert_eq!(login.status(), 200);
-    let refresh = login.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+    let refresh = set_cookie(login.headers(), "tinylord_refresh");
+    let csrf_cookie = set_cookie(login.headers(), "tinylord_csrf");
     let body: serde_json::Value = login.json().await.unwrap();
     let access = body["access_token"].as_str().unwrap();
-    let csrf = body["csrf_token"].as_str().unwrap();
     let me: serde_json::Value = c.get(format!("{}/v1/auth/me", s.base)).bearer_auth(access).send().await.unwrap().json().await.unwrap();
     let id = me["id"].as_str().unwrap();
 
@@ -314,17 +314,29 @@ async fn browser_login_refresh_logout_and_grants() {
     c.post(format!("{}/v1/admin/grants", s.base)).bearer_auth(&s.admin).json(&serde_json::json!({"principal_id": id, "database":"private", "role":"write"})).send().await.unwrap();
     assert_eq!(c.post(format!("{}/v1/db/private/collections/workspace/documents", s.base)).bearer_auth(access).json(&serde_json::json!({"ok":true})).send().await.unwrap().status(), 201);
 
-    let refreshed = c.post(format!("{}/v1/auth/refresh", s.base)).header("cookie", &refresh).header("x-csrf-token", csrf).send().await.unwrap();
+    let refreshed = c.post(format!("{}/v1/auth/refresh", s.base)).header("cookie", format!("{refresh}; {csrf_cookie}")).header("x-csrf-token", csrf_cookie.strip_prefix("tinylord_csrf=").unwrap()).send().await.unwrap();
     assert_eq!(refreshed.status(), 200);
-    let new_refresh = refreshed.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+    let new_refresh = set_cookie(refreshed.headers(), "tinylord_refresh");
+    let new_csrf_cookie = set_cookie(refreshed.headers(), "tinylord_csrf");
     let refreshed_body: serde_json::Value = refreshed.json().await.unwrap();
     assert_ne!(refreshed_body["access_token"], body["access_token"]);
-    assert_eq!(c.post(format!("{}/v1/auth/refresh", s.base)).header("cookie", &refresh).header("x-csrf-token", csrf).send().await.unwrap().status(), 401);
-    assert_eq!(c.post(format!("{}/v1/auth/logout", s.base)).header("cookie", new_refresh).header("x-csrf-token", refreshed_body["csrf_token"].as_str().unwrap()).send().await.unwrap().status(), 204);
+    assert_eq!(c.post(format!("{}/v1/auth/refresh", s.base)).header("cookie", format!("{refresh}; {csrf_cookie}")).header("x-csrf-token", csrf_cookie.strip_prefix("tinylord_csrf=").unwrap()).send().await.unwrap().status(), 401);
+    assert_eq!(c.post(format!("{}/v1/auth/logout", s.base)).header("cookie", format!("{new_refresh}; {new_csrf_cookie}")).header("x-csrf-token", new_csrf_cookie.strip_prefix("tinylord_csrf=").unwrap()).send().await.unwrap().status(), 204);
     for _ in 0..5 {
         assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "delegate", "password": "wrong-password" })).send().await.unwrap().status(), 401);
     }
     assert_eq!(c.post(format!("{}/v1/auth/login", s.base)).json(&serde_json::json!({ "username": "delegate", "password": "wrong-password" })).send().await.unwrap().status(), 429);
+}
+
+fn set_cookie(headers: &reqwest::header::HeaderMap, name: &str) -> String {
+    headers
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|value| {
+            let cookie = value.to_str().ok()?.split(';').next()?;
+            cookie.starts_with(&format!("{name}=")).then(|| cookie.to_string())
+        })
+        .unwrap_or_else(|| panic!("missing {name} cookie"))
 }
 
 #[tokio::test]

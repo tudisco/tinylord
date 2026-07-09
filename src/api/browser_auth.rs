@@ -21,16 +21,23 @@ pub fn hash_password(password: &str) -> Result<String, ApiError> {
     Argon2::default().hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng)).map(|p| p.to_string()).map_err(ApiError::internal)
 }
 
-fn cookie(value: &str, max_age: i64, secure: bool) -> HeaderValue {
+fn refresh_cookie(value: &str, max_age: i64, secure: bool) -> HeaderValue {
     let secure = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!("tinylord_refresh={value}; Path=/v1/auth; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}")).expect("cookie is valid")
 }
 
-fn clear_cookie(secure: bool) -> HeaderValue { cookie("", 0, secure) }
+fn csrf_cookie(value: &str, max_age: i64, secure: bool) -> HeaderValue {
+    let secure = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!("tinylord_csrf={value}; Path=/v1/auth; SameSite=Strict; Max-Age={max_age}{secure}")).expect("cookie is valid")
+}
+
+fn clear_refresh_cookie(secure: bool) -> HeaderValue { refresh_cookie("", 0, secure) }
+fn clear_csrf_cookie(secure: bool) -> HeaderValue { csrf_cookie("", 0, secure) }
 
 fn response(access: &str, csrf: &str, refresh: &str, state: &AppState) -> impl IntoResponse {
     let mut r = Json(serde_json::json!({ "access_token": access, "token_type": "Bearer", "expires_in": state.config.auth.access_token_ttl_secs, "csrf_token": csrf })).into_response();
-    r.headers_mut().append(header::SET_COOKIE, cookie(refresh, state.config.auth.refresh_token_ttl_secs, state.config.auth.secure_cookies));
+    r.headers_mut().append(header::SET_COOKIE, refresh_cookie(refresh, state.config.auth.refresh_token_ttl_secs, state.config.auth.secure_cookies));
+    r.headers_mut().append(header::SET_COOKIE, csrf_cookie(csrf, state.config.auth.refresh_token_ttl_secs, state.config.auth.secure_cookies));
     r
 }
 
@@ -61,12 +68,12 @@ async fn create_and_login(state: &AppState, body: Credentials) -> ApiResult<impl
     Ok(response(access.as_str(), csrf.as_str(), refresh.as_str(), state))
 }
 
-fn refresh_cookie(headers: &HeaderMap) -> Option<String> {
+fn refresh_cookie_value(headers: &HeaderMap) -> Option<String> {
     headers.get(header::COOKIE)?.to_str().ok()?.split(';').find_map(|part| part.trim().strip_prefix("tinylord_refresh=").map(str::to_string))
 }
 
 pub async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
-    let refresh = refresh_cookie(&headers).ok_or_else(|| ApiError::unauthorized("missing refresh session"))?;
+    let refresh = refresh_cookie_value(&headers).ok_or_else(|| ApiError::unauthorized("missing refresh session"))?;
     let csrf = headers.get("x-csrf-token").and_then(|v| v.to_str().ok()).ok_or_else(|| ApiError::forbidden("missing CSRF token"))?;
     let result = state.system.rotate_browser_session(&refresh, csrf, state.config.auth.access_token_ttl_secs, state.config.auth.refresh_token_ttl_secs).map_err(ApiError::internal)?;
     let Some((_id, access, refresh, csrf)) = result else { return Err(ApiError::unauthorized("invalid or expired refresh session")); };
@@ -74,12 +81,15 @@ pub async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> ApiRe
 }
 
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
-    let refresh = refresh_cookie(&headers).ok_or_else(|| ApiError::unauthorized("missing refresh session"))?;
+    let refresh = refresh_cookie_value(&headers).ok_or_else(|| ApiError::unauthorized("missing refresh session"))?;
     let csrf = headers.get("x-csrf-token").and_then(|v| v.to_str().ok()).ok_or_else(|| ApiError::forbidden("missing CSRF token"))?;
     if !state.system.revoke_browser_session(&refresh, csrf).map_err(ApiError::internal)? {
         return Err(ApiError::unauthorized("invalid or expired refresh session"));
     }
-    let mut r = StatusCode::NO_CONTENT.into_response(); r.headers_mut().append(header::SET_COOKIE, clear_cookie(state.config.auth.secure_cookies)); Ok(r)
+    let mut r = StatusCode::NO_CONTENT.into_response();
+    r.headers_mut().append(header::SET_COOKIE, clear_refresh_cookie(state.config.auth.secure_cookies));
+    r.headers_mut().append(header::SET_COOKIE, clear_csrf_cookie(state.config.auth.secure_cookies));
+    Ok(r)
 }
 
 pub async fn me(principal: crate::auth::Principal) -> ApiResult<impl IntoResponse> {

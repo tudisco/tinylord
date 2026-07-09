@@ -9,10 +9,11 @@ export class TinyLordError extends Error {
 }
 
 export class TinyLord {
-  constructor({ baseUrl = "", fetch: fetchImpl = globalThis.fetch } = {}) {
+  constructor({ baseUrl = "", fetch: fetchImpl = globalThis.fetch, readCookie = browserCookie } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetch is required");
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.fetch = fetchImpl;
+    this.readCookie = readCookie;
     this.accessToken = null;
     this.csrfToken = null;
   }
@@ -53,7 +54,8 @@ export class TinyLord {
   _headers({ csrf = false, extra = {} } = {}) {
     const headers = new Headers(extra);
     if (this.accessToken) headers.set("authorization", `Bearer ${this.accessToken}`);
-    if (csrf && this.csrfToken) headers.set("x-csrf-token", this.csrfToken);
+    const csrfToken = this.readCookie("tinylord_csrf") || this.csrfToken;
+    if (csrf && csrfToken) headers.set("x-csrf-token", csrfToken);
     return headers;
   }
 
@@ -67,6 +69,13 @@ export class TinyLord {
     }
     return payload;
   }
+}
+
+function browserCookie(name) {
+  if (typeof document === "undefined") return null;
+  const prefix = `${name}=`;
+  const item = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  return item ? decodeURIComponent(item.slice(prefix.length)) : null;
 }
 
 class Database {

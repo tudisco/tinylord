@@ -326,13 +326,16 @@ operator bearer token. Public `POST /v1/auth/register` is disabled unless
 
 `POST /v1/auth/login` accepts `{ "username", "password" }` and returns a
 15-minute access token plus a CSRF token. It also sets a rotating, HttpOnly,
-SameSite=Strict refresh cookie. Passwords are Argon2id hashes; access tokens,
-refresh sessions, and CSRF values are stored only as SHA-256 hashes. Login
+SameSite=Strict refresh cookie and a separate JS-readable, SameSite=Strict CSRF
+cookie. Passwords are Argon2id hashes; access tokens, refresh sessions, and
+CSRF values are stored only as SHA-256 hashes. Login
 failures use a generic response and are limited by source IP and username.
 
 Use the returned access token only in memory as `Authorization: Bearer ...`.
-Send the CSRF value in `X-CSRF-Token` for `POST /v1/auth/refresh` and
-`POST /v1/auth/logout`; refresh rotates the session and CSRF value. In
+The browser module reads the `tinylord_csrf` cookie and sends it in
+`X-CSRF-Token` for `POST /v1/auth/refresh` and `POST /v1/auth/logout`; refresh
+rotates both cookies. This lets a new client instance restore the session after
+a page reload without storing credentials in web storage. In
 production `secure_cookies = true` requires HTTPS (including a Cloudflare
 Tunnel origin). Set it to `false` only for local HTTP development.
 
@@ -374,7 +377,7 @@ const tinylord = TinyLord.connect({ baseUrl: "" });
 | Call | Result | Notes |
 |------|--------|-------|
 | `register(username, password)` | Session object | Works only when public registration is enabled. |
-| `login(username, password)` | Session object | Stores the returned access and CSRF tokens in the client instance. |
+| `login(username, password)` | Session object | Stores the returned access token in the client instance; the server sets refresh and CSRF cookies. |
 | `refresh()` | New session object | Uses the HttpOnly refresh cookie and rotates it. Call after a `401` due to access-token expiry. |
 | `logout()` | `undefined` | Revokes the refresh session and clears the in-memory tokens. |
 | `me()` | `{ id, name }` | Confirms the current access token. |
@@ -382,7 +385,9 @@ const tinylord = TinyLord.connect({ baseUrl: "" });
 
 A session object has `{ access_token, token_type, expires_in, csrf_token }`.
 Do not save it to localStorage, sessionStorage, URLs, or application records.
-The client retains it only in memory, so refresh after a page reload.
+The client retains it only in memory, so call `refresh()` after a page reload;
+the JS-readable CSRF cookie and HttpOnly refresh cookie make that safe restore
+possible without web storage.
 
 Every collection method returns the server JSON envelope unchanged:
 
