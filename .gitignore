@@ -1,0 +1,13 @@
+/target
+
+# Never commit data, snapshots, or key material.
+/data
+/snapshots
+/secrets
+*.key
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor cruft
+.DS_Store

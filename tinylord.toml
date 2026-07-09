@@ -1,0 +1,45 @@
+# tinylord configuration (§12, §20.5).
+#
+# Every value below is a default; delete any line to accept the default.
+# Override any scalar at runtime with an env var named TINYLORD_<SECTION>_<KEY>,
+# e.g. TINYLORD_SERVER_BIND=0.0.0.0:8090.
+#
+# The encryption KEY itself is never stored in this file — only a pointer to
+# where the key lives. See the [encryption] section.
+
+[server]
+bind         = "127.0.0.1:8090"
+data_dir     = "./data"
+snapshot_dir = "./snapshots"
+
+[limits]
+max_document_bytes = 1048576      # 1 MiB; reject larger documents (413)
+max_database_bytes = 1073741824   # 1 GiB; reject writes past this (413). 0 = unlimited
+max_query_limit    = 500          # query `limit` is clamped to this
+request_body_bytes = 2097152      # 2 MiB global HTTP body limit
+rate_per_minute    = 600          # per-principal request limit. 0 = disabled
+
+[writer]
+busy_timeout_ms        = 5000
+group_commit           = true     # batch queued writes into one transaction
+group_commit_max_batch = 64
+wal_checkpoint_secs    = 60        # periodic PRAGMA wal_checkpoint(TRUNCATE)
+
+[realtime]
+changelog_retention  = 10000      # rows kept in _changelog for SSE resume
+sse_channel_capacity = 256        # broadcast buffer; lagging subscribers get a resync
+
+[cors]
+# Explicit allow-list. NEVER use "*" when bearer tokens are in play (§15).
+allowed_origins = ["http://localhost:5173"]
+
+[encryption]
+# Encryption at rest via SQLCipher is ON by default (§20). Running unencrypted
+# requires BOTH `enabled = false` here AND the `--allow-unencrypted` serve flag.
+enabled    = true
+# Where the 64-hex-char key comes from: "key_file" | "env" | "keyring".
+#   key_file → read from `key_file` below (0600). Auto-generated on first run.
+#   env      → read from the TINYLORD_ENCRYPTION_KEY environment variable.
+#   keyring  → OS keyring (requires building with `--features keyring`).
+key_source = "key_file"
+key_file   = "./secrets/tinylord.key"
