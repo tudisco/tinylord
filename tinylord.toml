@@ -29,6 +29,12 @@ wal_checkpoint_secs    = 60        # periodic PRAGMA wal_checkpoint(TRUNCATE)
 changelog_retention  = 10000      # rows kept in _changelog for SSE resume
 sse_channel_capacity = 256        # broadcast buffer; lagging subscribers get a resync
 
+[pubsub]
+# Ephemeral channel fan-out and presence. Nothing published here is persisted.
+enabled          = true           # false hides the channel endpoints (404)
+max_event_bytes  = 65536          # reject larger published payloads (413)
+channel_capacity = 256            # broadcast buffer; lagging subscribers drop events
+
 [cors]
 # Explicit allow-list. NEVER use "*" when bearer tokens are in play (§15).
 allowed_origins = ["http://localhost:5173"]

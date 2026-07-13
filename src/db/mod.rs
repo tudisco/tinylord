@@ -12,6 +12,7 @@ pub mod writer;
 use crate::config::Config;
 use crate::encryption::Encryption;
 use crate::errors::{ApiError, ApiResult};
+use crate::api::pubsub::{self, PresenceMap, PubSubEvent};
 use crate::realtime::{self, ChangeEvent};
 use reader::ReadPool;
 use schema::DocStorage;
@@ -29,6 +30,11 @@ pub struct DbHandle {
     pub writer: WriterHandle,
     pub read_pool: ReadPool,
     pub broadcast_tx: broadcast::Sender<ChangeEvent>,
+    /// Ephemeral pub/sub fan-out. Independent of `broadcast_tx`: events here are
+    /// never persisted and never carry a sequence number.
+    pub pubsub_tx: broadcast::Sender<PubSubEvent>,
+    /// Live presence roster per channel for this database.
+    pub presence: std::sync::RwLock<PresenceMap>,
     checkpoint_task: tokio::task::JoinHandle<()>,
 }
 
@@ -88,6 +94,7 @@ impl DbRegistry {
     async fn open_handle(&self, name: &str) -> ApiResult<DbHandle> {
         let path = self.db_path(name);
         let broadcast_tx = realtime::new_channel(self.config.realtime.sse_channel_capacity);
+        let pubsub_tx = pubsub::new_channel(self.config.pubsub.channel_capacity);
 
         let writer = writer::spawn(
             &path,
@@ -124,6 +131,8 @@ impl DbRegistry {
             writer,
             read_pool,
             broadcast_tx,
+            pubsub_tx,
+            presence: std::sync::RwLock::new(PresenceMap::new()),
             checkpoint_task,
         })
     }

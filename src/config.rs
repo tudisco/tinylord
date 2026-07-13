@@ -20,6 +20,7 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub writer: WriterConfig,
     pub realtime: RealtimeConfig,
+    pub pubsub: PubSubConfig,
     pub cors: CorsConfig,
     pub encryption: EncryptionConfig,
     pub auth: AuthConfig,
@@ -79,6 +80,21 @@ pub struct WriterConfig {
 pub struct RealtimeConfig {
     pub changelog_retention: i64,
     pub sse_channel_capacity: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PubSubConfig {
+    /// When false, the ephemeral channel endpoints report `not_found` so the
+    /// feature is entirely hidden. Additive: a config without `[pubsub]` keeps
+    /// the default (enabled).
+    pub enabled: bool,
+    /// Maximum serialized size of a published event's `data` payload; larger
+    /// publishes are rejected with `413`.
+    pub max_event_bytes: usize,
+    /// Per-database broadcast buffer for ephemeral events; lagging subscribers
+    /// silently drop missed messages (best-effort, no resync).
+    pub channel_capacity: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +172,16 @@ impl Default for RealtimeConfig {
     }
 }
 
+impl Default for PubSubConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_event_bytes: 65_536,
+            channel_capacity: 256,
+        }
+    }
+}
+
 impl Default for CorsConfig {
     fn default() -> Self {
         // Matches the documented example. Operators must override for production.
@@ -195,6 +221,7 @@ impl Default for Config {
             limits: LimitsConfig::default(),
             writer: WriterConfig::default(),
             realtime: RealtimeConfig::default(),
+            pubsub: PubSubConfig::default(),
             cors: CorsConfig::default(),
             encryption: EncryptionConfig::default(),
             auth: AuthConfig::default(),
@@ -278,6 +305,10 @@ impl Config {
 
         parse_env("TINYLORD_REALTIME_CHANGELOG_RETENTION", &mut self.realtime.changelog_retention);
         parse_env("TINYLORD_REALTIME_SSE_CHANNEL_CAPACITY", &mut self.realtime.sse_channel_capacity);
+
+        parse_env("TINYLORD_PUBSUB_ENABLED", &mut self.pubsub.enabled);
+        parse_env("TINYLORD_PUBSUB_MAX_EVENT_BYTES", &mut self.pubsub.max_event_bytes);
+        parse_env("TINYLORD_PUBSUB_CHANNEL_CAPACITY", &mut self.pubsub.channel_capacity);
 
         parse_env("TINYLORD_ENCRYPTION_ENABLED", &mut self.encryption.enabled);
         if let Ok(v) = var("TINYLORD_ENCRYPTION_KEY_FILE") {

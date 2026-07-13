@@ -4,6 +4,7 @@ pub mod admin;
 pub mod browser_auth;
 pub mod documents;
 pub mod indexes;
+pub mod pubsub;
 pub mod query_ep;
 
 use crate::auth::Principal;
@@ -181,6 +182,19 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/db/{db}/collections/{coll}/subscribe",
             get(crate::realtime::subscribe),
         )
+        // Ephemeral pub/sub channels & presence
+        .route(
+            "/v1/db/{db}/channels/{channel}/publish",
+            post(pubsub::publish),
+        )
+        .route(
+            "/v1/db/{db}/channels/{channel}/subscribe",
+            get(pubsub::subscribe),
+        )
+        .route(
+            "/v1/db/{db}/channels/{channel}/presence",
+            get(pubsub::presence),
+        )
         // A missing API route must never fall through to a static SPA entry.
         .route("/v1/{*path}", axum::routing::any(api_not_found))
         // Global request body limit (§11). Layered outermost so it applies to all.
@@ -339,6 +353,27 @@ fn openapi_doc() -> serde_json::Value {
                     "summary": "Subscribe to changes (SSE)",
                     "security": [bearer],
                     "responses": {"200": { "content": { "text/event-stream": {} } }}
+                }
+            },
+            "/v1/db/{db}/channels/{channel}/publish": {
+                "post": {
+                    "summary": "Publish an ephemeral channel event",
+                    "security": [bearer],
+                    "responses": {"200": ok_json, "413": ok_json}
+                }
+            },
+            "/v1/db/{db}/channels/{channel}/subscribe": {
+                "get": {
+                    "summary": "Subscribe to a channel's ephemeral events and presence (SSE)",
+                    "security": [bearer],
+                    "responses": {"200": { "content": { "text/event-stream": {} } }}
+                }
+            },
+            "/v1/db/{db}/channels/{channel}/presence": {
+                "get": {
+                    "summary": "Current presence roster for a channel",
+                    "security": [bearer],
+                    "responses": {"200": ok_json}
                 }
             }
         }
