@@ -77,4 +77,49 @@ await assert.rejects(
   (error) => error instanceof TinyLordError && error.status === 404 && error.code === "not_found",
 );
 
+// Channel publish / subscribe / presence wire format, with two instances sharing
+// a mock transport (the subscriber sees the publisher's message, not its own).
+const publisher = TinyLord.connect({
+  clientId: "publisher-1",
+  fetch: async (url, options = {}) => {
+    assert.ok(url.endsWith("/v1/db/room/channels/lobby/publish"));
+    assert.equal(options.method, "POST");
+    const body = JSON.parse(options.body);
+    assert.equal(body.client_id, "publisher-1");
+    assert.deepEqual(body.data, { cursor: 42 });
+    return Response.json({ delivered: 1 });
+  },
+});
+const published = await publisher.db("room").channel("lobby").publish({ cursor: 42 });
+assert.deepEqual(published, { delivered: 1 });
+
+const subscriber = TinyLord.connect({
+  clientId: "subscriber-2",
+  fetch: async (url) => {
+    if (url.includes("/channels/lobby/subscribe")) {
+      assert.ok(url.includes("client_id=subscriber-2"));
+      return new Response(
+        ':ka\n\n' +
+        'event: presence\ndata: {"type":"join","client_id":"publisher-1","ts":1}\n\n' +
+        'event: message\ndata: {"channel":"lobby","client_id":"publisher-1","ts":2,"data":{"cursor":42}}\n\n',
+      );
+    }
+    if (url.includes("/channels/lobby/presence")) {
+      return Response.json({ clients: [{ client_id: "publisher-1", connected_at: 1 }] });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  },
+});
+
+const channel = subscriber.db("room").channel("lobby");
+const channelStream = channel.subscribe();
+const first = (await channelStream.next()).value;
+assert.deepEqual(first, { type: "presence", data: { type: "join", client_id: "publisher-1", ts: 1 } });
+const second = (await channelStream.next()).value;
+assert.deepEqual(second, { type: "message", data: { channel: "lobby", client_id: "publisher-1", ts: 2, data: { cursor: 42 } } });
+await channelStream.return();
+
+const roster = await channel.presence();
+assert.deepEqual(roster, { clients: [{ client_id: "publisher-1", connected_at: 1 }] });
+
 console.log("tinylord browser client tests passed");

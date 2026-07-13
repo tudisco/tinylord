@@ -32,6 +32,12 @@ fn free_port() -> u16 {
 }
 
 async fn start_server(max_document_bytes: u64) -> Server {
+    start_server_ext(max_document_bytes, "").await
+}
+
+/// Like `start_server`, but appends `extra_cfg` to the generated `tinylord.toml`
+/// so a test can add optional sections (e.g. `[pubsub]`).
+async fn start_server_ext(max_document_bytes: u64, extra_cfg: &str) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let port = free_port();
     let data_dir = dir.path().join("data");
@@ -62,11 +68,13 @@ allowed_origins = ["http://localhost:5173"]
 [auth]
 public_registration = true
 secure_cookies = false
+{extra}
 "#,
         data = data_dir.display(),
         snap = snap_dir.display(),
         key = key_file.display(),
         maxdoc = max_document_bytes,
+        extra = extra_cfg,
     );
     std::fs::write(&config_path, cfg).unwrap();
     let config_path = config_path.to_string_lossy().to_string();
@@ -556,4 +564,283 @@ fn wrong_key_fails_cleanly() {
         "expected clean error, got: {combined}"
     );
     assert!(!combined.contains(&bad_key), "key leaked into output");
+}
+
+// ---- Ephemeral pub/sub & presence ------------------------------------------
+
+/// Read from an in-progress SSE response until `needle` appears in the
+/// accumulated buffer or the timeout elapses. Returns whether it was seen.
+async fn sse_wait(resp: &mut reqwest::Response, buf: &mut String, needle: &str, secs: u64) -> bool {
+    tokio::time::timeout(Duration::from_secs(secs), async {
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    buf.push_str(&String::from_utf8_lossy(&chunk));
+                    if buf.contains(needle) {
+                        return true;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+async fn open_channel_sub(base: &str, token: &str, channel: &str, client_id: &str) -> reqwest::Response {
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/v1/db/app/channels/{channel}/subscribe?client_id={client_id}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "subscribe failed: {}", resp.status());
+    resp
+}
+
+#[tokio::test]
+async fn pubsub_publish_excludes_sender() {
+    let s = start_server(1_048_576).await;
+    let token = s.provision("app", "write").await;
+    let base = s.base.clone();
+
+    // The publisher's own subscription and a second subscriber with another id.
+    let mut pub_sub = open_channel_sub(&base, &token, "lobby", "pubclient").await;
+    let mut other = open_channel_sub(&base, &token, "lobby", "otherclient").await;
+    // Let both connections register before publishing.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let published: serde_json::Value = s
+        .client()
+        .post(format!("{base}/v1/db/app/channels/lobby/publish"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "client_id": "pubclient", "data": { "hello": "world" } }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(published["delivered"].as_i64().unwrap() >= 1);
+
+    // The other subscriber receives the message.
+    let mut other_buf = String::new();
+    assert!(
+        sse_wait(&mut other, &mut other_buf, "\"hello\":\"world\"", 5).await,
+        "other subscriber did not receive the message: {other_buf}"
+    );
+    assert!(other_buf.contains("event: message"));
+
+    // The publisher's own subscription never receives its own message.
+    let mut pub_buf = String::new();
+    let saw_own = sse_wait(&mut pub_sub, &mut pub_buf, "\"hello\":\"world\"", 1).await;
+    assert!(!saw_own, "publisher wrongly received its own message: {pub_buf}");
+}
+
+#[tokio::test]
+async fn pubsub_presence_join_leave_and_roster() {
+    let s = start_server(1_048_576).await;
+    let token = s.provision("app", "write").await;
+    let base = s.base.clone();
+    let c = s.client();
+
+    // A connects first and watches presence.
+    let mut a = open_channel_sub(&base, &token, "room", "clientA").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Roster shows A while connected.
+    let roster: serde_json::Value = c
+        .get(format!("{base}/v1/db/app/channels/room/presence"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = roster["clients"].as_array().unwrap().iter().map(|c| c["client_id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"clientA"), "roster missing A: {roster}");
+
+    // B connects; A should observe B's join.
+    let b = open_channel_sub(&base, &token, "room", "clientB").await;
+    let mut a_buf = String::new();
+    assert!(
+        sse_wait(&mut a, &mut a_buf, "\"type\":\"join\"", 5).await,
+        "A did not see B join: {a_buf}"
+    );
+    assert!(a_buf.contains("\"client_id\":\"clientB\""));
+    assert!(a_buf.contains("event: presence"));
+
+    // Roster now shows both.
+    let roster2: serde_json::Value = c
+        .get(format!("{base}/v1/db/app/channels/room/presence"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids2: Vec<&str> = roster2["clients"].as_array().unwrap().iter().map(|c| c["client_id"].as_str().unwrap()).collect();
+    assert!(ids2.contains(&"clientA") && ids2.contains(&"clientB"), "roster missing a client: {roster2}");
+
+    // B disconnects; A should observe B's leave.
+    drop(b);
+    let mut a_buf2 = String::new();
+    assert!(
+        sse_wait(&mut a, &mut a_buf2, "\"type\":\"leave\"", 5).await,
+        "A did not see B leave: {a_buf2}"
+    );
+    assert!(a_buf2.contains("\"client_id\":\"clientB\""));
+}
+
+#[tokio::test]
+async fn pubsub_authz() {
+    let s = start_server(1_048_576).await;
+    let ro = s.provision("app", "read").await;
+    let base = s.base.clone();
+    let c = s.client();
+
+    // Read-only token may open a subscription.
+    let sub = c
+        .get(format!("{base}/v1/db/app/channels/lobby/subscribe?client_id=reader"))
+        .bearer_auth(&ro)
+        .send()
+        .await
+        .unwrap();
+    assert!(sub.status().is_success());
+
+    // Read-only token may NOT publish.
+    let forbidden = c
+        .post(format!("{base}/v1/db/app/channels/lobby/publish"))
+        .bearer_auth(&ro)
+        .json(&serde_json::json!({ "client_id": "reader", "data": {} }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(forbidden, 403);
+
+    // No token → 401 on both publish and subscribe.
+    let no_pub = c
+        .post(format!("{base}/v1/db/app/channels/lobby/publish"))
+        .json(&serde_json::json!({ "client_id": "x", "data": {} }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(no_pub, 401);
+    let no_sub = c
+        .get(format!("{base}/v1/db/app/channels/lobby/subscribe?client_id=x"))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(no_sub, 401);
+}
+
+#[tokio::test]
+async fn pubsub_oversized_and_invalid_name() {
+    let s = start_server(1_048_576).await;
+    let token = s.provision("app", "write").await;
+    let base = s.base.clone();
+    let c = s.client();
+
+    // Oversized payload (> default max_event_bytes = 65536) → 413.
+    let big = "x".repeat(70_000);
+    let oversize = c
+        .post(format!("{base}/v1/db/app/channels/lobby/publish"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "client_id": "c", "data": { "blob": big } }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(oversize, 413);
+
+    // Invalid channel name (leading digit) → 400 validation.
+    let bad_name = c
+        .post(format!("{base}/v1/db/app/channels/1bad/publish"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "client_id": "c", "data": {} }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(bad_name, 400);
+
+    // Invalid client_id → 400 validation.
+    let bad_client = c
+        .post(format!("{base}/v1/db/app/channels/lobby/publish"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "client_id": "", "data": {} }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(bad_client, 400);
+}
+
+#[tokio::test]
+async fn pubsub_defaults_without_config_section() {
+    // `start_server` writes a config with no `[pubsub]` section; the feature must
+    // still work with defaults.
+    let s = start_server(1_048_576).await;
+    let token = s.provision("app", "write").await;
+    let base = s.base.clone();
+
+    let mut sub = open_channel_sub(&base, &token, "lobby", "listener").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    s.client()
+        .post(format!("{base}/v1/db/app/channels/lobby/publish"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "client_id": "sender", "data": { "n": 1 } }))
+        .send()
+        .await
+        .unwrap();
+
+    let mut buf = String::new();
+    assert!(
+        sse_wait(&mut sub, &mut buf, "\"n\":1", 5).await,
+        "defaults round-trip failed: {buf}"
+    );
+}
+
+#[tokio::test]
+async fn pubsub_disabled_hides_endpoints() {
+    let s = start_server_ext(1_048_576, "[pubsub]\nenabled = false\n").await;
+    let token = s.provision("app", "write").await;
+    let base = s.base.clone();
+    let c = s.client();
+
+    assert_eq!(
+        c.post(format!("{base}/v1/db/app/channels/lobby/publish"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "client_id": "c", "data": {} }))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        c.get(format!("{base}/v1/db/app/channels/lobby/subscribe?client_id=c"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        c.get(format!("{base}/v1/db/app/channels/lobby/presence"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
 }
