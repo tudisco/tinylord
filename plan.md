@@ -262,6 +262,40 @@ Request body:
 - Filtering: the optional `filter` is the equality-only subset (scalars + `$in`); evaluate each event against it before sending. Enter/leave semantics are NOT implemented in v1 (a doc that stops matching simply stops producing events for that subscriber; deletes are always forwarded).
 - Fan-out is in-memory per database; single process only.
 
+### 9.1 Pub/sub & presence (ephemeral)
+
+A second, independent fan-out sits alongside the document change stream for
+transient signalling — cursors, typing indicators, "user is online" — that must
+never touch disk.
+
+- **Endpoints** (channel name validated like a collection name; grant as noted):
+  - `POST /v1/db/{db}/channels/{channel}/publish` (grant `write`) — body
+    `{"client_id": "...", "data": <arbitrary JSON>}`. Broadcasts
+    `{channel, client_id, ts, data}` to current subscribers; returns
+    `{"delivered": <count>}`. The `data` payload is size-checked against
+    `[pubsub] max_event_bytes` (`413` if exceeded).
+  - `GET /v1/db/{db}/channels/{channel}/subscribe?client_id=...` (grant `read`)
+    — SSE. Emits `event: message` for published events and `event: presence`
+    (`{"type":"join"|"leave", client_id, ts}`) for roster transitions.
+  - `GET /v1/db/{db}/channels/{channel}/presence` (grant `read`) — returns
+    `{"clients": [{"client_id", "connected_at"}]}`.
+- **Ephemeral, best-effort.** Publishing bypasses the writer actor entirely:
+  nothing is persisted, there is no changelog, no sequence number, no
+  `Last-Event-ID` resume, and no `resync`. A subscriber that lags past the
+  broadcast buffer silently drops the missed events and continues.
+- **Sender exclusion.** Every event carries its originating `client_id`; a
+  subscriber never receives events bearing its own `client_id`. This covers both
+  published messages and presence, so a client sees others' joins/leaves but not
+  its own.
+- **Presence per channel.** Tracked in memory per database as
+  `channel -> (client_id -> {connected_at, count})`. A subscribe connection
+  registers on connect and deregisters on disconnect; a `join` is broadcast on a
+  client's first connection to a channel and a `leave` when its last connection
+  closes (the same `client_id` may hold several connections).
+- **Disable switch.** With `[pubsub] enabled = false` the three endpoints report
+  `not_found`, hiding the feature. A config without a `[pubsub]` section keeps
+  the defaults (enabled, 64 KiB events, 256-event buffer).
+
 ## 10. Backup
 
 - **Snapshot endpoint** (§7.2): `VACUUM INTO` produces a clean single-file copy. Expose it; that's the whole in-process backup story.
