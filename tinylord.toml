@@ -51,6 +51,11 @@ refresh_token_ttl_secs = 2592000
 # Leave true behind HTTPS/Cloudflare. Set false only for local HTTP development.
 secure_cookies = true
 
+[admin_ui]
+# Built-in Riot.js admin interface at /0/. It is off by default. The page asks
+# for a global admin token and keeps it only in page memory.
+enabled = false
+
 # Optional app-specific loopback listeners. This list is file-only: no
 # environment override can select a directory to expose.
 # [[static_apps]]

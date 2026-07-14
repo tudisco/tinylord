@@ -119,6 +119,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/tinylord.js", get(browser_library))
+        .route("/0", get(admin_ui_redirect))
+        .route("/0/", get(admin_ui))
         .route("/v1/auth/register", post(browser_auth::register))
         .route("/v1/auth/login", post(browser_auth::login))
         .route("/v1/auth/refresh", post(browser_auth::refresh))
@@ -276,6 +278,33 @@ async fn browser_library() -> impl IntoResponse {
         ],
         include_str!("../../tinylord.js"),
     )
+}
+
+async fn admin_ui_redirect(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> ApiResult<axum::response::Redirect> {
+    if !state.config.admin_ui.enabled {
+        return Err(ApiError::not_found("admin UI is disabled"));
+    }
+    Ok(axum::response::Redirect::permanent("/0/"))
+}
+
+async fn admin_ui(axum::extract::State(state): axum::extract::State<AppState>) -> ApiResult<impl IntoResponse> {
+    if !state.config.admin_ui.enabled {
+        return Err(ApiError::not_found("admin UI is disabled"));
+    }
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        format!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>TinyLord Admin</title><style>body{{background:#f6f8fc;margin:0}}</style></head><body><admin-app></admin-app><script>{}</script><script>{}</script><script>riot.mount('admin-app')</script></body></html>",
+            include_str!("../../assets/riot.min.js"),
+            include_str!("../../assets/admin-ui.js"),
+        ),
+    ))
 }
 
 /// The document response envelope (§7.4).

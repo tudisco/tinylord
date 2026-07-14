@@ -1,0 +1,191 @@
+<admin-app>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">TinyLord</p>
+        <h1>Admin</h1>
+      </div>
+      <form onsubmit={connect} class="token-form">
+        <input type="password" placeholder="Global admin token" value={state.token} oninput={setToken} autocomplete="off" />
+        <button disabled={state.loading}>{state.loading ? 'Loading…' : 'Connect'}</button>
+      </form>
+    </header>
+
+    <p class="status" if={state.status}>{state.status}</p>
+
+    <section if={state.connected}>
+      <article>
+        <div class="section-head">
+          <h2>Registration</h2>
+          <label class="switch">
+            <input type="checkbox" checked={state.registration} onchange={toggleRegistration} />
+            <span>Allow public registration</span>
+          </label>
+        </div>
+      </article>
+
+      <article>
+        <div class="section-head"><h2>Databases</h2></div>
+        <form onsubmit={createDatabase} class="inline-form">
+          <input name="database" placeholder="Database name" required pattern="[A-Za-z0-9_-]+" />
+          <button>Create database</button>
+        </form>
+        <ul class="list">
+          <li each={database in state.databases}>
+            <strong>{database.name}</strong><small>Created {formatTime(database.created_at)}</small>
+          </li>
+        </ul>
+      </article>
+
+      <article>
+        <div class="section-head"><h2>Users & tokens</h2><small>{state.principals.length} total</small></div>
+        <form onsubmit={createBrowserUser} class="inline-form">
+          <input name="username" placeholder="Username" required pattern="[A-Za-z0-9_-]{3,64}" />
+          <input name="password" type="password" placeholder="Password (12+ characters)" required minlength="12" />
+          <button>Create browser user</button>
+        </form>
+        <form onsubmit={createGrant} class="inline-form">
+          <input name="principal_id" placeholder="Principal ID" required />
+          <input name="database" placeholder="Database" required pattern="[A-Za-z0-9_-]+" />
+          <select name="role"><option>read</option><option>write</option><option>admin</option></select>
+          <button>Grant access</button>
+        </form>
+        <ul class="list">
+          <li each={principal in state.principals}>
+            <div>
+              <strong>{principal.name}</strong>
+              <small>{principal.id} · {principal.kind}{principal.is_admin ? ' · global admin' : ''}{principal.disabled ? ' · disabled' : ''}</small>
+            </div>
+            <small>{grantLabel(principal.grants)}</small>
+          </li>
+        </ul>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    export default {
+      state: {
+        token: '',
+        connected: false,
+        loading: false,
+        status: '',
+        databases: [],
+        principals: [],
+        registration: false,
+      },
+
+      setToken(event) {
+        this.update({ token: event.target.value })
+      },
+
+      headers() {
+        return {
+          authorization: `Bearer ${this.state.token}`,
+          'content-type': 'application/json',
+        }
+      },
+
+      async request(path, options = {}) {
+        const response = await fetch(path, { ...options, headers: { ...this.headers(), ...options.headers } })
+        const payload = response.status === 204 ? null : await response.json().catch(() => null)
+        if (!response.ok) throw new Error(payload?.error?.message || `Request failed (${response.status})`)
+        return payload
+      },
+
+      async connect(event) {
+        event.preventDefault()
+        this.update({ loading: true, status: '' })
+        try {
+          const [databases, principals, registration] = await Promise.all([
+            this.request('/v1/admin/databases'),
+            this.request('/v1/admin/principals'),
+            this.request('/v1/admin/auth/registration'),
+          ])
+          this.update({ connected: true, databases: databases.databases, principals: principals.principals, registration: registration.enabled })
+        } catch (error) {
+          this.update({ connected: false, status: error.message })
+        } finally {
+          this.update({ loading: false })
+        }
+      },
+
+      async refresh() {
+        const [databases, principals, registration] = await Promise.all([
+          this.request('/v1/admin/databases'),
+          this.request('/v1/admin/principals'),
+          this.request('/v1/admin/auth/registration'),
+        ])
+        this.update({ databases: databases.databases, principals: principals.principals, registration: registration.enabled })
+      },
+
+      async toggleRegistration(event) {
+        try {
+          await this.request('/v1/admin/auth/registration', { method: 'PUT', body: JSON.stringify({ enabled: event.target.checked }) })
+          this.update({ registration: event.target.checked, status: '' })
+        } catch (error) {
+          event.target.checked = this.state.registration
+          this.update({ status: error.message })
+        }
+      },
+
+      async createDatabase(event) {
+        event.preventDefault()
+        const name = event.target.database.value
+        try {
+          await this.request('/v1/admin/databases', { method: 'POST', body: JSON.stringify({ name }) })
+          event.target.reset()
+          await this.refresh()
+        } catch (error) {
+          this.update({ status: error.message })
+        }
+      },
+
+      async createBrowserUser(event) {
+        event.preventDefault()
+        const name = event.target.username.value
+        const password = event.target.password.value
+        try {
+          await this.request('/v1/admin/principals', { method: 'POST', body: JSON.stringify({ name, password }) })
+          event.target.reset()
+          await this.refresh()
+        } catch (error) {
+          this.update({ status: error.message })
+        }
+      },
+
+      async createGrant(event) {
+        event.preventDefault()
+        const principal_id = event.target.principal_id.value
+        const database = event.target.database.value
+        const role = event.target.role.value
+        try {
+          await this.request('/v1/admin/grants', { method: 'POST', body: JSON.stringify({ principal_id, database, role }) })
+          event.target.reset()
+          await this.refresh()
+        } catch (error) {
+          this.update({ status: error.message })
+        }
+      },
+
+      formatTime(value) { return new Date(value).toLocaleString() },
+      grantLabel(grants) { return grants.length ? grants.map((grant) => `${grant.database}: ${grant.role}`).join(', ') : 'No grants' },
+    }
+  </script>
+
+  <style>
+    :host { color: #172033; font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    main { margin: 0 auto; max-width: 880px; padding: 36px 20px 64px; }
+    header, .section-head, li, .inline-form { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+    h1, h2, p { margin: 0; } h1 { font-size: 30px; } h2 { font-size: 18px; }
+    .eyebrow { color: #667085; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    article { background: #fff; border: 1px solid #d9deea; border-radius: 12px; margin-top: 16px; padding: 20px; }
+    .token-form, .inline-form { display: flex; gap: 8px; } .inline-form { justify-content: flex-start; margin: 16px 0; }
+    input, select { border: 1px solid #c6cedd; border-radius: 7px; font: inherit; padding: 9px 10px; }
+    button { background: #2457d6; border: 0; border-radius: 7px; color: white; cursor: pointer; font: inherit; padding: 9px 12px; }
+    button:disabled { opacity: .6; } .status { color: #b42318; margin-top: 16px; }
+    .list { list-style: none; margin: 0; padding: 0; } li { border-top: 1px solid #edf0f5; padding: 11px 0; } li > div { display: grid; }
+    small { color: #667085; } .switch { display: flex; gap: 8px; align-items: center; }
+    @media (max-width: 650px) { header, .token-form, .inline-form { align-items: stretch; flex-direction: column; } }
+  </style>
+</admin-app>

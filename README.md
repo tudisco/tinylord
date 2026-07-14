@@ -206,6 +206,7 @@ See the fully-commented [`tinylord.toml`](tinylord.toml) in this repo. Summary:
 | `pubsub`      | `enabled`                | `true`                      | Enable ephemeral channel messaging and presence |
 | `pubsub`      | `max_event_bytes`        | `65536`                     | Maximum serialized publish payload |
 | `pubsub`      | `channel_capacity`        | `256`                       | In-memory channel buffer; lagging subscribers lose events |
+| `admin_ui`    | `enabled`                | `false`                     | Serve the embedded global-admin interface at `/0/` |
 | `cors`        | `allowed_origins`        | `["http://localhost:5173"]` | Explicit allow-list; never `*` with tokens |
 | `encryption`  | `enabled`                | `true`                      | Encryption at rest (SQLCipher) |
 | `encryption`  | `key_source`             | `key_file`                  | `key_file` \| `env` \| `keyring` |
@@ -264,6 +265,28 @@ WantedBy=multi-user.target
 The service user must own `data/`, `snapshots/`, and `secrets/`; do not make
 the encryption key readable by other users. Back up the key separately from
 the encrypted database files—both are required for recovery.
+
+### Built-in admin UI
+
+TinyLord includes a small, embedded [Riot.js](https://riot.js.org/) operator
+page. It is disabled by default. To turn it on, add this to the server config
+and restart the service:
+
+```toml
+[admin_ui]
+enabled = true
+```
+
+Open `https://your-host/0/` (or the equivalent loopback/Tunnel hostname) and
+enter the global admin token. The UI keeps that token only in page memory; it
+does not write it to browser storage. It can list databases and principals,
+inspect grants, create databases and browser users, grant database access, and
+toggle public registration. Use the JSON admin API for automation or features
+outside this small operator surface.
+
+The page and Riot runtime are compiled into the TinyLord binary. No CDN request
+or external admin asset is needed at runtime. Keep `/0/` behind the same HTTPS,
+network, and operator-access controls as the rest of the admin API.
 
 ---
 

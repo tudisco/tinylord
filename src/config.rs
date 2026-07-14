@@ -21,6 +21,7 @@ pub struct Config {
     pub writer: WriterConfig,
     pub realtime: RealtimeConfig,
     pub pubsub: PubSubConfig,
+    pub admin_ui: AdminUiConfig,
     pub cors: CorsConfig,
     pub encryption: EncryptionConfig,
     pub auth: AuthConfig,
@@ -95,6 +96,15 @@ pub struct PubSubConfig {
     /// Per-database broadcast buffer for ephemeral events; lagging subscribers
     /// silently drop missed messages (best-effort, no resync).
     pub channel_capacity: usize,
+}
+
+/// Controls the built-in, embedded operator interface at `/0/`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AdminUiConfig {
+    /// Disabled by default because the page is an operator surface and must only
+    /// be exposed deliberately behind the same network controls as the API.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -182,6 +192,12 @@ impl Default for PubSubConfig {
     }
 }
 
+impl Default for AdminUiConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
 impl Default for CorsConfig {
     fn default() -> Self {
         // Matches the documented example. Operators must override for production.
@@ -222,6 +238,7 @@ impl Default for Config {
             writer: WriterConfig::default(),
             realtime: RealtimeConfig::default(),
             pubsub: PubSubConfig::default(),
+            admin_ui: AdminUiConfig::default(),
             cors: CorsConfig::default(),
             encryption: EncryptionConfig::default(),
             auth: AuthConfig::default(),
@@ -309,6 +326,8 @@ impl Config {
         parse_env("TINYLORD_PUBSUB_ENABLED", &mut self.pubsub.enabled);
         parse_env("TINYLORD_PUBSUB_MAX_EVENT_BYTES", &mut self.pubsub.max_event_bytes);
         parse_env("TINYLORD_PUBSUB_CHANNEL_CAPACITY", &mut self.pubsub.channel_capacity);
+
+        parse_env("TINYLORD_ADMIN_UI_ENABLED", &mut self.admin_ui.enabled);
 
         parse_env("TINYLORD_ENCRYPTION_ENABLED", &mut self.encryption.enabled);
         if let Ok(v) = var("TINYLORD_ENCRYPTION_KEY_FILE") {

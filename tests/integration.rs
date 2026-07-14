@@ -450,6 +450,51 @@ async fn static_apps_are_isolated_and_keep_api_routes() {
 }
 
 #[tokio::test]
+async fn admin_ui_is_opt_in_and_embedded() {
+    let disabled = start_server(1_048_576).await;
+    assert_eq!(
+        disabled
+            .client()
+            .get(format!("{}/0/", disabled.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        disabled
+            .client()
+            .get(format!("{}/0", disabled.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+
+    let enabled = start_server_ext(1_048_576, "\n[admin_ui]\nenabled = true\n").await;
+    let page = enabled
+        .client()
+        .get(format!("{}/0/", enabled.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 200);
+    assert!(page
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("text/html"));
+    let html = page.text().await.unwrap();
+    assert!(html.contains("<admin-app>"));
+    assert!(html.contains("riot.register('admin-app'"));
+    assert!(!html.contains("https://unpkg.com"));
+}
+
+#[tokio::test]
 async fn concurrency_serializes_without_busy() {
     // Hammer one database from many concurrent clients; every write must succeed
     // (the single writer serializes them; SQLITE_BUSY never surfaces).
