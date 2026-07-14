@@ -61,6 +61,7 @@ be the smaller, faster-to-understand choice when those capabilities are enough.
 - [Architecture in one paragraph](#architecture-in-one-paragraph)
 - [Why TinyLord?](#why-tinylord)
 - [Build](#build)
+- [Personal server deployment](#personal-server-deployment)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Static applications & deployment](#static-applications--deployment)
@@ -114,6 +115,24 @@ Run the tests:
 cargo test
 node tests/tinylord_client.mjs
 ```
+
+---
+
+## Personal server deployment
+
+For the current personal server, this checkout has a local-only `deploy.sh`
+helper. It is deliberately gitignored because it contains a deployment target.
+It builds this exact source tree inside a disposable `linux/amd64` Docker
+builder, uploads only the release binary, restarts `tinylord-delegate`, verifies
+the Delegate static-app listener, and removes the temporary build output.
+
+```bash
+./deploy.sh
+```
+
+Use `./deploy.sh status` or `./deploy.sh logs` for service inspection. The
+Delegate web app is deployed separately from its own repository; this script
+updates TinyLord only.
 
 ---
 

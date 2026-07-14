@@ -1,4 +1,5 @@
 /target
+/deploy.sh
 
 # Never commit data, snapshots, or key material.
 /data
