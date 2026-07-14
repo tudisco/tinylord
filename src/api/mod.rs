@@ -114,13 +114,15 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     let cors = build_cors(&state.config.cors);
     let body_limit = state.config.limits.request_body_bytes;
+    let admin_ui_path = state.config.admin_ui.path.clone();
+    let admin_ui_redirect_path = admin_ui_path.trim_end_matches('/').to_string();
 
     Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/tinylord.js", get(browser_library))
-        .route("/0", get(admin_ui_redirect))
-        .route("/0/", get(admin_ui))
+        .route(&admin_ui_redirect_path, get(admin_ui_redirect))
+        .route(&admin_ui_path, get(admin_ui))
         .route("/v1/auth/register", post(browser_auth::register))
         .route("/v1/auth/login", post(browser_auth::login))
         .route("/v1/auth/refresh", post(browser_auth::refresh))
@@ -286,7 +288,7 @@ async fn admin_ui_redirect(
     if !state.config.admin_ui.enabled {
         return Err(ApiError::not_found("admin UI is disabled"));
     }
-    Ok(axum::response::Redirect::permanent("/0/"))
+    Ok(axum::response::Redirect::permanent(&state.config.admin_ui.path))
 }
 
 async fn admin_ui(axum::extract::State(state): axum::extract::State<AppState>) -> ApiResult<impl IntoResponse> {

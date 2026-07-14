@@ -495,6 +495,46 @@ async fn admin_ui_is_opt_in_and_embedded() {
 }
 
 #[tokio::test]
+async fn admin_ui_path_defaults_and_can_be_configured() {
+    let custom = start_server_ext(
+        1_048_576,
+        "\n[admin_ui]\nenabled = true\npath = \"/operator/\"\n",
+    )
+    .await;
+    assert_eq!(
+        custom
+            .client()
+            .get(format!("{}/operator/", custom.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        custom
+            .client()
+            .get(format!("{}/0/", custom.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    let no_redirects = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let redirect = no_redirects
+        .get(format!("{}/operator", custom.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redirect.status(), 308);
+    assert_eq!(redirect.headers().get("location").unwrap(), "/operator/");
+}
+
+#[tokio::test]
 async fn concurrency_serializes_without_busy() {
     // Hammer one database from many concurrent clients; every write must succeed
     // (the single writer serializes them; SQLITE_BUSY never surfaces).

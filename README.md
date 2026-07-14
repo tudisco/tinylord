@@ -206,7 +206,8 @@ See the fully-commented [`tinylord.toml`](tinylord.toml) in this repo. Summary:
 | `pubsub`      | `enabled`                | `true`                      | Enable ephemeral channel messaging and presence |
 | `pubsub`      | `max_event_bytes`        | `65536`                     | Maximum serialized publish payload |
 | `pubsub`      | `channel_capacity`        | `256`                       | In-memory channel buffer; lagging subscribers lose events |
-| `admin_ui`    | `enabled`                | `false`                     | Serve the embedded global-admin interface at `/0/` |
+| `admin_ui`    | `enabled`                | `false`                     | Serve the embedded global-admin interface |
+| `admin_ui`    | `path`                   | `/0/`                       | File-only URL path for the embedded admin interface |
 | `cors`        | `allowed_origins`        | `["http://localhost:5173"]` | Explicit allow-list; never `*` with tokens |
 | `encryption`  | `enabled`                | `true`                      | Encryption at rest (SQLCipher) |
 | `encryption`  | `key_source`             | `key_file`                  | `key_file` \| `env` \| `keyring` |
@@ -277,7 +278,8 @@ and restart the service:
 enabled = true
 ```
 
-Open `https://your-host/0/` (or the equivalent loopback/Tunnel hostname) and
+When `path` is omitted, open `https://your-host/0/` (or the equivalent
+loopback/Tunnel hostname) and
 enter the global admin token. The UI keeps that token only in page memory; it
 does not write it to browser storage. It can list databases and principals,
 inspect grants, create databases and browser users, grant database access, and
@@ -287,6 +289,17 @@ outside this small operator surface.
 The page and Riot runtime are compiled into the TinyLord binary. No CDN request
 or external admin asset is needed at runtime. Keep `/0/` behind the same HTTPS,
 network, and operator-access controls as the rest of the admin API.
+
+To move it, set a different path in the same file and restart the service:
+
+```toml
+[admin_ui]
+enabled = true
+path = "/operator/"
+```
+
+The path must be a safe slash-separated path and cannot overlap `/v1/` or other
+TinyLord routes. The setting is deliberately file-only.
 
 ---
 

@@ -137,6 +137,7 @@ fn cli_encryption(cfg: &Config) -> Result<Encryption> {
 async fn serve(config_path: &PathBuf, allow_unencrypted: bool) -> Result<()> {
     let mut cfg = Config::load(config_path)?;
     cfg.validate_static_apps()?;
+    cfg.validate_admin_ui_path()?;
     let encryption = encryption::resolve(&cfg, allow_unencrypted)?;
     if encryption.is_enabled() {
         tracing::info!("encryption at rest: ENABLED (SQLCipher)");

@@ -105,6 +105,9 @@ pub struct AdminUiConfig {
     /// Disabled by default because the page is an operator surface and must only
     /// be exposed deliberately behind the same network controls as the API.
     pub enabled: bool,
+    /// URL path for the embedded operator interface. It is normalized to one
+    /// leading and trailing slash during startup validation.
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -194,7 +197,10 @@ impl Default for PubSubConfig {
 
 impl Default for AdminUiConfig {
     fn default() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            path: "/0/".to_string(),
+        }
     }
 }
 
@@ -274,6 +280,33 @@ impl Config {
                 anyhow::bail!("static app '{}' directory is not a directory", app.name);
             }
         }
+        Ok(())
+    }
+
+    /// Normalize and validate the file-configured embedded admin UI path. It
+    /// must not overlap the API namespace or use unsafe path segments.
+    pub fn validate_admin_ui_path(&mut self) -> anyhow::Result<()> {
+        let raw = self.admin_ui.path.trim();
+        if !raw.starts_with('/') {
+            anyhow::bail!("admin UI path must start with '/'");
+        }
+        let trimmed = raw.trim_matches('/');
+        if trimmed.is_empty() {
+            anyhow::bail!("admin UI path cannot be '/'");
+        }
+        if !trimmed.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        }) {
+            anyhow::bail!("admin UI path may contain only '/', letters, numbers, '-' and '_'");
+        }
+        let first = trimmed.split('/').next().expect("nonempty path");
+        if first == "v1" || matches!(trimmed, "health" | "openapi" | "tinylord") {
+            anyhow::bail!("admin UI path overlaps a reserved TinyLord route");
+        }
+        self.admin_ui.path = format!("/{trimmed}/");
         Ok(())
     }
 }
