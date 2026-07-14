@@ -71,6 +71,7 @@ be the smaller, faster-to-understand choice when those capabilities are enough.
 - [HTTP API reference](#http-api-reference) (every endpoint, with curl)
 - [Query language](#query-language)
 - [Realtime (SSE)](#realtime-sse)
+- [Pub/sub & presence](#pubsub--presence)
 - [Backups & disaster recovery (Litestream)](#backups--disaster-recovery-litestream)
 - [Limits & errors](#limits--errors)
 - [What this is not (v1 non-goals)](#what-this-is-not-v1-non-goals)
@@ -183,6 +184,9 @@ See the fully-commented [`tinylord.toml`](tinylord.toml) in this repo. Summary:
 | `writer`      | `wal_checkpoint_secs`    | `60`                        | Periodic `wal_checkpoint(TRUNCATE)` interval |
 | `realtime`    | `changelog_retention`    | `10000`                     | Rows kept in `_changelog` for SSE resume |
 | `realtime`    | `sse_channel_capacity`   | `256`                       | Broadcast buffer; lagging subscribers get a `resync` |
+| `pubsub`      | `enabled`                | `true`                      | Enable ephemeral channel messaging and presence |
+| `pubsub`      | `max_event_bytes`        | `65536`                     | Maximum serialized publish payload |
+| `pubsub`      | `channel_capacity`        | `256`                       | In-memory channel buffer; lagging subscribers lose events |
 | `cors`        | `allowed_origins`        | `["http://localhost:5173"]` | Explicit allow-list; never `*` with tokens |
 | `encryption`  | `enabled`                | `true`                      | Encryption at rest (SQLCipher) |
 | `encryption`  | `key_source`             | `key_file`                  | `key_file` \| `env` \| `keyring` |
@@ -708,6 +712,89 @@ const es = new EventSource(url, { withCredentials: false });
 es.addEventListener("change", (e) => console.log(JSON.parse(e.data)));
 es.addEventListener("resync", () => { /* re-fetch current state */ });
 ```
+
+---
+
+## Pub/sub & presence
+
+Pub/sub channels are for short-lived application events such as typing
+indicators, cursor positions, notifications, and “who is online” state. They
+are separate from document realtime: messages live only in memory, are never
+written to SQLite, and disappear when the process restarts.
+
+The feature is enabled by default. Disable it with:
+
+```toml
+[pubsub]
+enabled = false
+```
+
+Channel names use the same safe-name rules as database collections. A principal
+needs `write` access on the database to publish and `read` access to subscribe
+or read presence. The three endpoints are:
+
+```text
+POST /v1/db/{db}/channels/{channel}/publish
+GET  /v1/db/{db}/channels/{channel}/subscribe?client_id=...
+GET  /v1/db/{db}/channels/{channel}/presence
+```
+
+The simplest browser usage is through the bundled client:
+
+```js
+const room = app.db("app").channel("lobby");
+
+// Requires a database write grant. The result is { delivered }.
+await room.publish({ type: "typing", user: "ada" });
+
+// Requires a database read grant.
+console.log(await room.presence());
+
+const abort = new AbortController();
+for await (const event of room.subscribe({ signal: abort.signal })) {
+  if (event.type === "message") {
+    console.log("message", event.data.data, "from", event.data.client_id);
+  }
+  if (event.type === "presence") {
+    console.log(event.data.type, event.data.client_id);
+  }
+}
+// Call abort.abort() when the page/component is disposed.
+```
+
+`TinyLord` assigns each client instance a stable random `client_id`. A channel
+subscriber does not receive its own published messages or its own join/leave
+presence events. The server sends `message` events with this shape:
+
+```json
+{
+  "channel": "lobby",
+  "client_id": "ada-browser",
+  "ts": 1780000000000,
+  "data": { "type": "typing", "user": "ada" }
+}
+```
+
+Presence events have `event: presence` and data shaped as
+`{ "type": "join" | "leave", "client_id": "...", "ts": 1780000000000 }`.
+The presence endpoint returns `{ "clients": [{ "client_id", "connected_at" }] }`.
+
+For non-JavaScript clients, publish with a bearer token:
+
+```bash
+curl -s -X POST "$BASE/v1/db/app/channels/lobby/publish" \
+  -H "Authorization: Bearer $USER" -H 'content-type: application/json' \
+  -d '{"client_id":"operator-console","data":{"type":"notice","text":"Hello"}}'
+
+curl -N "$BASE/v1/db/app/channels/lobby/subscribe?client_id=operator-console" \
+  -H "Authorization: Bearer $USER"
+```
+
+Delivery is best-effort. There is no persistence, changelog, sequence number,
+resume, or `resync` event for pub/sub. If a subscriber falls behind the
+in-memory buffer, missed events are dropped. Re-read durable application state
+from the document API whenever an event is only a notification that state may
+have changed.
 
 ---
 
