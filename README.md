@@ -543,6 +543,14 @@ curl -s -X POST $BASE/v1/admin/databases \
 curl -s $BASE/v1/admin/databases -H "Authorization: Bearer $ADMIN"
 # {"databases":[{"name":"app","created_at":...}]}
 
+# List principals for a custom admin interface. No password or token material
+# is returned; each record includes its type, status, and database grants.
+curl -s $BASE/v1/admin/principals -H "Authorization: Bearer $ADMIN"
+# Add ?name=ada for a case-insensitive name/username search.
+# {"principals":[{"id":"01J...","name":"ada","username":"ada", \
+#   "kind":"browser","is_admin":false,"disabled":false,"created_at":..., \
+#   "grants":[{"database":"app","role":"write"}]}]}
+
 # Delete a database (irreversible: removes the file and -wal/-shm).
 curl -s -X DELETE $BASE/v1/admin/databases/app -H "Authorization: Bearer $ADMIN"
 # 204
@@ -556,6 +564,17 @@ curl -s -X POST $BASE/v1/admin/principals \
 # Disable a principal.
 curl -s -X DELETE $BASE/v1/admin/principals/01J... -H "Authorization: Bearer $ADMIN"
 # 204
+
+# Reset a browser user's password and revoke its browser access/refresh tokens.
+curl -s -X POST $BASE/v1/admin/principals/password \
+  -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"name":"ada","password":"new-long-password"}'
+
+# Read or set the public-registration policy.
+curl -s $BASE/v1/admin/auth/registration -H "Authorization: Bearer $ADMIN"
+curl -s -X PUT $BASE/v1/admin/auth/registration \
+  -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"enabled":false}'
 
 # Upsert a grant.
 curl -s -X POST $BASE/v1/admin/grants \

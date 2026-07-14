@@ -6,11 +6,11 @@ use crate::auth::{AdminPrincipal, Principal};
 use crate::errors::{ApiError, ApiResult};
 use crate::ids;
 use crate::system::Role;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 pub struct CreateDatabaseBody {
@@ -96,6 +96,68 @@ pub async fn create_principal(
         StatusCode::CREATED,
         Json(serde_json::json!({ "id": id, "token": token.as_str() })),
     ))
+}
+
+#[derive(Deserialize)]
+pub struct ListPrincipalsQuery {
+    /// Optional case-insensitive name or username substring for admin search.
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GrantView {
+    database: String,
+    role: String,
+}
+
+#[derive(Serialize)]
+struct PrincipalView {
+    id: String,
+    name: String,
+    username: Option<String>,
+    kind: &'static str,
+    is_admin: bool,
+    disabled: bool,
+    created_at: i64,
+    grants: Vec<GrantView>,
+}
+
+/// List browser and token principals for a custom admin interface. Token and
+/// password credentials are never included; only metadata and grants are sent.
+pub async fn list_principals(
+    State(state): State<AppState>,
+    _admin: AdminPrincipal,
+    Query(query): Query<ListPrincipalsQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let principals = state
+        .system
+        .find_principals(query.name.as_deref())
+        .map_err(ApiError::internal)?;
+    let mut users = Vec::with_capacity(principals.len());
+    for principal in principals {
+        let grants = state
+            .system
+            .grants_for(&principal.id)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|(database, role)| GrantView { database, role })
+            .collect();
+        users.push(PrincipalView {
+            kind: if principal.username.is_some() {
+                "browser"
+            } else {
+                "token"
+            },
+            id: principal.id,
+            name: principal.name,
+            username: principal.username,
+            is_admin: principal.is_admin,
+            disabled: principal.disabled,
+            created_at: principal.created_at,
+            grants,
+        });
+    }
+    Ok(Json(serde_json::json!({ "principals": users })))
 }
 
 #[derive(Deserialize)]

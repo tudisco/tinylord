@@ -134,7 +134,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/databases/{db}/snapshot",
             post(admin::snapshot),
         )
-        .route("/v1/admin/principals", post(admin::create_principal))
+        .route(
+            "/v1/admin/principals",
+            post(admin::create_principal).get(admin::list_principals),
+        )
         .route("/v1/admin/principals/password", post(admin::reset_browser_password))
         .route(
             "/v1/admin/auth/registration",
@@ -315,7 +318,8 @@ fn openapi_doc() -> serde_json::Value {
                 "post": { "summary": "Consistent snapshot via VACUUM INTO", "security": [bearer], "responses": {"200": ok_json} }
             },
             "/v1/admin/principals": {
-                "post": { "summary": "Create principal (token shown once)", "security": [bearer], "responses": {"201": ok_json} }
+                "post": { "summary": "Create principal (token shown once)", "security": [bearer], "responses": {"201": ok_json} },
+                "get": { "summary": "List principals with grants for an admin interface", "security": [bearer], "responses": {"200": ok_json} }
             },
             "/v1/admin/principals/password": {
                 "post": { "summary": "Reset browser-user password and revoke browser sessions", "security": [bearer], "responses": {"200": ok_json, "404": ok_json} }
@@ -326,6 +330,10 @@ fn openapi_doc() -> serde_json::Value {
             "/v1/admin/grants": {
                 "post": { "summary": "Upsert grant", "security": [bearer], "responses": {"200": ok_json} },
                 "delete": { "summary": "Remove grant", "security": [bearer], "responses": {"204": {}} }
+            },
+            "/v1/admin/auth/registration": {
+                "get": { "summary": "Get public registration policy", "security": [bearer], "responses": {"200": ok_json} },
+                "put": { "summary": "Set public registration policy", "security": [bearer], "responses": {"200": ok_json} }
             },
             "/v1/db/{db}/collections/{coll}/documents": {
                 "post": { "summary": "Create document", "security": [bearer], "responses": {"201": ok_json} }

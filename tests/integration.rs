@@ -305,6 +305,62 @@ async fn auth_errors() {
 }
 
 #[tokio::test]
+async fn admin_principal_listing_is_safe_and_includes_grants() {
+    let s = start_server(1_048_576).await;
+    let c = s.client();
+    c.post(format!("{}/v1/admin/databases", s.base))
+        .bearer_auth(&s.admin)
+        .json(&serde_json::json!({ "name": "app" }))
+        .send()
+        .await
+        .unwrap();
+    let created: serde_json::Value = c
+        .post(format!("{}/v1/admin/principals", s.base))
+        .bearer_auth(&s.admin)
+        .json(&serde_json::json!({ "name": "ada", "password": "long-enough-password" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+    c.post(format!("{}/v1/admin/grants", s.base))
+        .bearer_auth(&s.admin)
+        .json(&serde_json::json!({ "principal_id": id, "database": "app", "role": "write" }))
+        .send()
+        .await
+        .unwrap();
+
+    let listed: serde_json::Value = c
+        .get(format!("{}/v1/admin/principals?name=ADA", s.base))
+        .bearer_auth(&s.admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user = &listed["principals"][0];
+    assert_eq!(user["id"], id);
+    assert_eq!(user["kind"], "browser");
+    assert_eq!(user["grants"][0]["database"], "app");
+    assert!(user.get("password").is_none());
+    assert!(user.get("token").is_none());
+
+    let token = s.provision("other", "read").await;
+    assert_eq!(
+        c.get(format!("{}/v1/admin/principals", s.base))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+}
+
+#[tokio::test]
 async fn browser_login_refresh_logout_and_grants() {
     let s = start_server(1_048_576).await;
     let c = s.client();
