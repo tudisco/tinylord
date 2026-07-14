@@ -72,7 +72,8 @@ enum AdminCmd {
         #[arg(long)]
         admin: bool,
     },
-    /// Grant a role on a database to a principal.
+    /// Grant a role on a database to a principal. `--user` accepts a principal
+    /// id OR an exact user name.
     Grant {
         #[arg(long)]
         user: String,
@@ -80,6 +81,12 @@ enum AdminCmd {
         db: String,
         #[arg(long)]
         role: String,
+    },
+    /// List principals, optionally filtered by name substring (look up an id).
+    ListUsers {
+        /// Case-insensitive substring to match against name / username.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Offline re-encryption: re-key `_system.db` and every data DB (§20.6).
     Rekey,
@@ -231,8 +238,43 @@ fn run_admin(config_path: &PathBuf, cmd: AdminCmd) -> Result<()> {
             if !system.database_exists(&db)? {
                 bail!("database '{db}' does not exist");
             }
-            system.upsert_grant(&user, &db, role)?;
-            println!("granted {} on {db} to {user}", role.as_str());
+            // Accept an id or an exact user name; resolve to a single id so we
+            // never write a grant for a nonexistent or ambiguous principal.
+            let user_id = system.resolve_principal(&user)?;
+            system.upsert_grant(&user_id, &db, role)?;
+            println!("granted {} on {db} to {user} ({user_id})", role.as_str());
+            Ok(())
+        }
+        AdminCmd::ListUsers { name } => {
+            let encryption = cli_encryption(&cfg)?;
+            let system = System::open(&cfg, &encryption)?;
+            let users = system.find_principals(name.as_deref())?;
+            if users.is_empty() {
+                match &name {
+                    Some(q) => println!("no users match '{q}'"),
+                    None => println!("no users exist yet"),
+                }
+                return Ok(());
+            }
+            println!("{:<28}  {:<20}  {:<8}  {:<8}  GRANTS", "ID", "NAME", "TYPE", "STATUS");
+            for u in users {
+                let kind = if u.username.is_some() { "browser" } else { "token" };
+                let mut status = if u.disabled { "disabled" } else { "active" }.to_string();
+                if u.is_admin {
+                    status.push_str("/admin");
+                }
+                let grants = system.grants_for(&u.id)?;
+                let grants = if grants.is_empty() {
+                    "-".to_string()
+                } else {
+                    grants
+                        .iter()
+                        .map(|(d, r)| format!("{d}:{r}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                println!("{:<28}  {:<20}  {:<8}  {:<8}  {}", u.id, u.name, kind, status, grants);
+            }
             Ok(())
         }
         AdminCmd::Rekey => cmd_rekey(&cfg),

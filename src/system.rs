@@ -65,6 +65,29 @@ pub struct IndexRecord {
     pub is_unique: bool,
 }
 
+/// A principal as listed by `admin list-users` (CLI lookup by name).
+#[derive(Debug, Serialize)]
+pub struct PrincipalRecord {
+    pub id: String,
+    pub name: String,
+    /// Present for browser (username/password) users; `None` for token principals.
+    pub username: Option<String>,
+    pub is_admin: bool,
+    pub disabled: bool,
+    pub created_at: i64,
+}
+
+fn row_to_principal(r: &rusqlite::Row) -> rusqlite::Result<PrincipalRecord> {
+    Ok(PrincipalRecord {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        username: r.get(2)?,
+        is_admin: r.get::<_, i64>(3)? != 0,
+        disabled: r.get::<_, i64>(4)? != 0,
+        created_at: r.get(5)?,
+    })
+}
+
 /// Handle to the control-plane database. Cheap to clone (pooled).
 #[derive(Clone)]
 pub struct System {
@@ -409,6 +432,89 @@ impl System {
         // Grants for a dropped database are no longer meaningful.
         conn.execute("DELETE FROM grants WHERE database_name = ?1", params![name])?;
         Ok(())
+    }
+
+    // ---- Principal lookup (CLI) --------------------------------------------
+
+    /// List principals, optionally filtered by a case-insensitive substring
+    /// match on the token-principal `name` or the browser `username`. Passing
+    /// `None` lists every principal.
+    pub fn find_principals(&self, name_filter: Option<&str>) -> Result<Vec<PrincipalRecord>> {
+        let conn = self.conn()?;
+        let mut out = Vec::new();
+        match name_filter {
+            Some(q) => {
+                let like = format!("%{}%", q.to_lowercase());
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, username, is_admin, disabled, created_at FROM principals \
+                     WHERE lower(name) LIKE ?1 OR lower(COALESCE(username, '')) LIKE ?1 \
+                     ORDER BY name",
+                )?;
+                for r in stmt.query_map(params![like], row_to_principal)? {
+                    out.push(r?);
+                }
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, username, is_admin, disabled, created_at \
+                     FROM principals ORDER BY name",
+                )?;
+                for r in stmt.query_map([], row_to_principal)? {
+                    out.push(r?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The `(database, role)` grants held by a principal.
+    pub fn grants_for(&self, principal_id: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT database_name, role FROM grants WHERE principal_id = ?1 ORDER BY database_name",
+        )?;
+        let mut out = Vec::new();
+        for r in stmt.query_map(params![principal_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Resolve a value that is either a principal id or an exact (case-insensitive)
+    /// name/username to a single principal id. Errors if nothing or more than one
+    /// principal matches, so callers never grant to the wrong or an ambiguous
+    /// account.
+    pub fn resolve_principal(&self, id_or_name: &str) -> Result<String> {
+        let conn = self.conn()?;
+        // Exact id first — an id is unambiguous.
+        match conn.query_row(
+            "SELECT id FROM principals WHERE id = ?1",
+            params![id_or_name],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(id) => return Ok(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => return Err(e.into()),
+        }
+        // Otherwise treat it as a name / username.
+        let mut stmt = conn.prepare(
+            "SELECT id FROM principals \
+             WHERE lower(name) = lower(?1) OR lower(COALESCE(username, '')) = lower(?1)",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(params![id_or_name], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        match ids.len() {
+            0 => Err(anyhow::anyhow!(
+                "no principal with id or name '{id_or_name}' (see `tinylord admin list-users`)"
+            )),
+            1 => Ok(ids.into_iter().next().unwrap()),
+            n => Err(anyhow::anyhow!(
+                "'{id_or_name}' is ambiguous: {n} principals share that name — pass the exact id (see `tinylord admin list-users`)"
+            )),
+        }
     }
 
     // ---- Grants ------------------------------------------------------------

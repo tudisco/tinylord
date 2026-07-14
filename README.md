@@ -478,7 +478,8 @@ running. They all accept `--config <path>` (default `tinylord.toml`).
 | `tinylord keygen [--out <path>]` | Generate a 32-byte key (0600 file, or stdout) |
 | `tinylord admin reset-token` | Rotate the global admin token (prints once) |
 | `tinylord admin create-user --name NAME [--admin]` | Create a principal offline (prints token once) |
-| `tinylord admin grant --user ID --db NAME --role read\|write\|admin` | Grant a role |
+| `tinylord admin list-users [--name SUBSTR]` | List principals (id, name, type, status, grants); look up an id by name |
+| `tinylord admin grant --user ID\|NAME --db NAME --role read\|write\|admin` | Grant a role (accepts a principal id or an exact user name) |
 | `tinylord admin rekey` | Offline re-encryption with a fresh key |
 | `tinylord db create NAME` | Create a database |
 | `tinylord db list` | List databases |
