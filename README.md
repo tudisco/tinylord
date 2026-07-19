@@ -36,32 +36,21 @@ and applies the authenticated user’s database grants to every call.
 
 ## Why TinyLord?
 
-TinyLord exists for small, self-hosted applications that need a dependable
-place for documents, authentication, and realtime updates without giving up
-ownership of the server or data.
-
-Firebase is excellent, but it is a hosted service: the backend, deployment
-shape, and operational boundaries are not yours to own in the same direct way.
-[Appwrite](https://appwrite.io/) is a capable open-source platform, but it
-solves a much broader problem than a small private application needs. Its
-feature set and operational footprint were more than this project wanted.
-
-[PocketBase](https://pocketbase.io/) was the clearest inspiration. Its compact
-single-binary approach, straightforward API, and focus on getting an app
-working quickly are exactly the qualities TinyLord aims to preserve. TinyLord
-takes a narrower path: a small Rust binary, one encrypted SQLite file per
-logical database, a schemaless document API, and a deliberately modest browser
-client. The goal is not to replace PocketBase, Appwrite, or Firebase; it is to
-be the smaller, faster-to-understand choice when those capabilities are enough.
+For small, self-hosted apps that need documents, auth, and realtime updates
+without giving up ownership of the server or data. Firebase is hosted;
+[Appwrite](https://appwrite.io/) solves a much broader problem than a small
+private app needs. [PocketBase](https://pocketbase.io/) was the clearest
+inspiration — TinyLord takes an even narrower path: a small Rust binary, one
+encrypted SQLite file per logical database, a schemaless document API, and a
+deliberately modest browser client. Not a replacement for any of them; the
+smaller, faster-to-understand choice when its capabilities are enough.
 
 ---
 
 ## Table of contents
 
 - [Architecture in one paragraph](#architecture-in-one-paragraph)
-- [Why TinyLord?](#why-tinylord)
 - [Build](#build)
-- [Personal server deployment](#personal-server-deployment)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Static applications & deployment](#static-applications--deployment)
@@ -115,24 +104,6 @@ Run the tests:
 cargo test
 node tests/tinylord_client.mjs
 ```
-
----
-
-## Personal server deployment
-
-For the current personal server, this checkout has a local-only `deploy.sh`
-helper. It is deliberately gitignored because it contains a deployment target.
-It builds this exact source tree inside a disposable `linux/amd64` Docker
-builder, uploads only the release binary, restarts `tinylord-delegate`, verifies
-the Delegate static-app listener, and removes the temporary build output.
-
-```bash
-./deploy.sh
-```
-
-Use `./deploy.sh status` or `./deploy.sh logs` for service inspection. The
-Delegate web app is deployed separately from its own repository; this script
-updates TinyLord only.
 
 ---
 
@@ -224,18 +195,16 @@ adding one listener per application:
 
 ```toml
 [[static_apps]]
-name = "delegate"
+name = "myapp"
 bind = "127.0.0.1:9300"
-directory = "/home/tudisco/DelegateServer/public"
+directory = "/srv/myapp/public"
 spa_fallback = true
 ```
 
-The static handler uses the configured directory only and rejects traversal.
+The static handler serves only the configured directory and rejects traversal.
 `/v1/*`, `/health`, and `/openapi.json` always take precedence over static
 files. With `spa_fallback = true`, unknown non-API paths serve `index.html`;
-unknown API paths remain `404`. Files receive normal MIME types from the static
-file service. Deploy fingerprinted assets so ordinary HTTP revalidation stays
-safe while browsers retain immutable asset names efficiently.
+unknown API paths remain `404`.
 
 Keep every listener on loopback. A Cloudflare Tunnel may map a hostname to its
 corresponding local port, such as `http://127.0.0.1:9300`; TinyLord does not
@@ -249,10 +218,10 @@ Description=tinylord
 After=network-online.target
 
 [Service]
-User=tudisco
-Group=tudisco
-WorkingDirectory=/home/tudisco/DelegateServer
-ExecStart=/home/tudisco/DelegateServer/tinylord serve --config /home/tudisco/DelegateServer/tinylord.toml
+User=tinylord
+Group=tinylord
+WorkingDirectory=/srv/tinylord
+ExecStart=/srv/tinylord/tinylord serve --config /srv/tinylord/tinylord.toml
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -418,16 +387,6 @@ Tunnel origin). Set it to `false` only for local HTTP development.
 SSE still uses bearer authorization. Browser clients that need realtime should
 use a `fetch()` streaming client with the short-lived access token; do not put
 tokens in query strings.
-
-### Planned: Google sign-in
-
-Google sign-in is a practical phase-two addition. It will use OAuth 2.0
-authorization-code flow with PKCE, strict `state` and nonce validation, and
-server-side verification of Google identity tokens. Each verified Google
-subject will map to the same TinyLord principal and grant model used by password
-users. It requires an operator-configured Google client ID, client secret, and
-allowed redirect URL; it should not be enabled until those values and account
-linking behavior are explicitly configured.
 
 ### Browser client module
 
@@ -950,20 +909,13 @@ Collection and database names must match `^[a-zA-Z][a-zA-Z0-9_]{0,63}$`.
 
 ## What this is not (v1 non-goals)
 
-No web/admin UI. No built-in TLS/ACME (terminate TLS at a reverse proxy). No
-blob storage. No raw SQL for clients. No realtime delivery guarantees. No
-`$set`/`$inc`, aggregation, joins, `$regex`, or nested boolean trees. No
-multi-node/replication/clustering. The **API proxy** (a pinned-route gateway for
-secret-gated third-party APIs) is a documented fast-follow module — the auth,
-token, rate-limit, and logging layers are built so it can be added without
-rework, but it ships no code in v1.
+No web UI beyond the small embedded operator page. No built-in TLS/ACME
+(terminate TLS at a reverse proxy). No blob storage. No raw SQL for clients.
+No realtime delivery guarantees. No `$set`/`$inc`, aggregation, joins,
+`$regex`, or nested boolean trees. No multi-node/replication/clustering.
 
 ---
 
 ## License
 
 [MIT](LICENSE) © 2026 tudisco.biz.
-
-You're free to use, modify, and redistribute this software, including
-commercially — the only condition is that you keep the copyright and license
-notice (see [`LICENSE`](LICENSE)) in copies or substantial portions.
