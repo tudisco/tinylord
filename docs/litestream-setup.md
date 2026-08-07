@@ -1,65 +1,74 @@
 # Litestream Disaster Recovery Setup
 
-This document describes the SQLCipher-aware Litestream backup service used by
-the TinyLord instance on the server. It continuously replicates every TinyLord
-database to an S3-compatible object store and supports point-in-time restore.
+TinyLord stores each logical database as its own SQLite file, encrypted with
+SQLCipher by default. This document describes how to replicate those files
+continuously to an S3-compatible object store with Litestream, so a lost or
+corrupted server can be restored to a recent point in time.
+
+Paths, bucket names, and the service account below are examples. Substitute
+the values your deployment actually uses.
 
 ## Requirements
 
-- TinyLord encryption is enabled and its key is stored in a protected key file.
-- Use the SQLCipher-capable Litestream fork, not an unmodified Litestream
-  binary. The fork accepts the database key through `LITESTREAM_SQLCIPHER_KEY`.
-- Build Litestream for the target operating system. Prefer the same SQLCipher
-  release family and compile options used by TinyLord. After changing either
-  SQLCipher build, run the restore drill below before relying on backups.
-- An S3-compatible bucket and an application key with list, read, and write
-  access to the backup prefix.
+- **A SQLCipher-aware Litestream build.** An unmodified Litestream binary
+  cannot read an encrypted TinyLord database and will fail with
+  `file is not a database`. You need a build that accepts the database key,
+  conventionally through the `LITESTREAM_SQLCIPHER_KEY` environment variable.
+  Build it for your target operating system, and prefer the same SQLCipher
+  release family and compile options that TinyLord itself uses.
+- **An S3-compatible bucket** and an application key with list, read, and
+  write access to the backup prefix.
+- **The TinyLord encryption key**, stored in a file readable only by the
+  service account.
 
-Never put the TinyLord encryption key or object-store credentials in this
-repository, `litestream.yml`, shell history, or systemd unit text.
+After changing either SQLCipher build — TinyLord's or Litestream's — run the
+restore drill below before relying on backups again.
 
-## Server Layout
+> Never put the TinyLord encryption key or object-store credentials in version
+> control, in `litestream.yml`, in shell history, or in systemd unit text.
+> Keep them in a mode `0600` file owned by the service account.
 
-The deployed instance uses these private files:
+## Layout
+
+A deployment needs these files. The exact locations don't matter as long as
+the secrets are not world-readable.
 
 | Path | Purpose |
 | --- | --- |
-| `/home/tudisco/DelegateServer/data/` | Encrypted TinyLord databases |
-| `/home/tudisco/DelegateServer/litestream-tinylord` | SQLCipher-aware Litestream binary |
-| `/home/tudisco/DelegateServer/litestream.yml` | Replication configuration without secrets |
-| `/home/tudisco/DelegateServer/secrets/litestream-b2.env` | Object-store credentials, mode `0600` |
-| `/home/tudisco/DelegateServer/secrets/tinylord.key` | TinyLord raw SQLCipher key, mode `0600` |
-| `/home/tudisco/.config/systemd/user/litestream-tinylord.service` | User systemd service |
-
-The service is enabled as a user service and is tied to
-`tinylord-delegate.service`. It automatically restarts after a failure.
+| `/var/lib/tinylord/data/` | Encrypted TinyLord databases |
+| `/usr/local/bin/litestream-sqlcipher` | SQLCipher-aware Litestream binary |
+| `/etc/tinylord/litestream.yml` | Replication configuration, no secrets |
+| `/etc/tinylord/secrets/litestream.env` | Object-store credentials, mode `0600` |
+| `/etc/tinylord/secrets/tinylord.key` | Raw SQLCipher key, mode `0600` |
+| `/etc/systemd/system/litestream-tinylord.service` | systemd unit |
 
 ## Credentials
 
 Create a private environment file owned by the service account:
 
 ```sh
-install -d -m 700 /home/tudisco/DelegateServer/secrets
+install -d -m 700 /etc/tinylord/secrets
 umask 077
-cat > /home/tudisco/DelegateServer/secrets/litestream-b2.env <<'EOF'
+cat > /etc/tinylord/secrets/litestream.env <<'EOF'
 LITESTREAM_ACCESS_KEY_ID=replace-me
 LITESTREAM_SECRET_ACCESS_KEY=replace-me
 EOF
-chmod 600 /home/tudisco/DelegateServer/secrets/litestream-b2.env
+chmod 600 /etc/tinylord/secrets/litestream.env
 ```
 
-For Backblaze B2, use the S3 endpoint and region supplied for the bucket. Keep
-the endpoint in the replica URL, not the credential file.
+Keep the object-store endpoint in the replica URL rather than the credential
+file, so the credential file holds nothing but the key pair.
 
 ## Replication Configuration
 
-Each TinyLord database must have its own replica prefix. Include `_system.db`:
-it holds TinyLord users, permissions, and server settings.
+Give every TinyLord database its own replica prefix. **Include `_system.db`** —
+it holds TinyLord's users, permissions, and server settings, and a restore
+without it leaves you with data you cannot authenticate against.
 
 ```yaml
 access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
 secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
-region: us-east-005
+region: us-east-1
 sync-interval: 1s
 validation-interval: 24h
 
@@ -74,36 +83,53 @@ logging:
   level: info
 
 dbs:
-  - path: /home/tudisco/DelegateServer/data/_system.db
+  - path: /var/lib/tinylord/data/_system.db
     replica:
-      url: s3://TinyLord/tinylord/_system?endpoint=https://s3.us-east-005.backblazeb2.com&sign-payload=true&force-path-style=true
-  - path: /home/tudisco/DelegateServer/data/delegate.db
+      url: s3://my-bucket/tinylord/_system
+  - path: /var/lib/tinylord/data/app.db
     replica:
-      url: s3://TinyLord/tinylord/delegate?endpoint=https://s3.us-east-005.backblazeb2.com&sign-payload=true&force-path-style=true
+      url: s3://my-bucket/tinylord/app
 ```
 
 Repeat the `dbs` entry for every additional `*.db` file. Use a unique prefix
-per database and per TinyLord environment to avoid mixing replication history.
+per database *and* per environment — sharing a prefix between two databases or
+between staging and production mixes their replication history and makes both
+unrestorable.
+
+Non-AWS S3-compatible providers generally need the endpoint and a few flags in
+the replica URL, for example:
+
+```
+s3://my-bucket/tinylord/app?endpoint=https://s3.example-provider.com&sign-payload=true&force-path-style=true
+```
+
+Set `region` to whatever the provider specifies for the bucket.
 
 ## systemd Service
 
-`LITESTREAM_SQLCIPHER_KEY` must use TinyLord's raw SQLCipher key syntax:
-`x'<64-hex-character-key>'`. Passing the hex key as an ordinary passphrase will
-make Litestream report `file is not a database`.
+`LITESTREAM_SQLCIPHER_KEY` must use SQLCipher's **raw key** syntax —
+`x'<64-hex-character-key>'`, quotes included. Passing the bare hex string makes
+SQLCipher treat it as a passphrase to derive a key from, and Litestream will
+report `file is not a database`. This is the single most common setup mistake.
+
+Ordering matters: start Litestream after TinyLord, and tie their lifecycles
+together so a TinyLord restart doesn't leave replication running against files
+that are no longer being written.
 
 ```ini
 [Unit]
 Description=Litestream backup for TinyLord
 Wants=network-online.target
-After=network-online.target tinylord-delegate.service
-Requires=tinylord-delegate.service
-PartOf=tinylord-delegate.service
+After=network-online.target tinylord.service
+Requires=tinylord.service
+PartOf=tinylord.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/tudisco/DelegateServer
-EnvironmentFile=/home/tudisco/DelegateServer/secrets/litestream-b2.env
-ExecStart=/bin/sh -c 'export LITESTREAM_SQLCIPHER_KEY="x'"'"'$(cat /home/tudisco/DelegateServer/secrets/tinylord.key)'"'"'"; exec /home/tudisco/DelegateServer/litestream-tinylord replicate -config /home/tudisco/DelegateServer/litestream.yml'
+User=tinylord
+WorkingDirectory=/var/lib/tinylord
+EnvironmentFile=/etc/tinylord/secrets/litestream.env
+ExecStart=/bin/sh -c 'export LITESTREAM_SQLCIPHER_KEY="x'"'"'$(cat /etc/tinylord/secrets/tinylord.key)'"'"'"; exec /usr/local/bin/litestream-sqlcipher replicate -config /etc/tinylord/litestream.yml'
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -111,52 +137,65 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 ```
 
-Install and start it:
+The `ExecStart` quoting is load-bearing: it wraps the key file's contents in
+`x'...'` without ever writing the key into the unit file. Install and start it:
 
 ```sh
-systemctl --user daemon-reload
-systemctl --user enable --now litestream-tinylord
-systemctl --user status litestream-tinylord --no-pager
+systemctl daemon-reload
+systemctl enable --now litestream-tinylord
+systemctl status litestream-tinylord --no-pager
 ```
 
-## Verify and Restore
+To run TinyLord as a user service instead, drop the `User=` line, use
+`systemctl --user`, and set `WantedBy=default.target`.
 
-Normal operation should emit `replica sync` messages for every configured
-database:
+## Verify
+
+Normal operation emits `replica sync` messages for every configured database:
 
 ```sh
-systemctl --user is-active litestream-tinylord
-journalctl --user -u litestream-tinylord -n 100 --no-pager
+systemctl is-active litestream-tinylord
+journalctl -u litestream-tinylord -n 100 --no-pager
 ```
 
-Perform a restore drill after initial setup, SQLCipher upgrades, or changes to
-the backup configuration. Restore to a temporary location only; never restore
-over a live database.
+Check this after every TinyLord deployment or service restart. A database file
+added after Litestream started is not replicated until the config lists it and
+the service is reloaded.
+
+## Restore Drill
+
+Run a drill after initial setup, after any SQLCipher upgrade, and after changes
+to the backup configuration. Restore to a temporary location only — never
+restore over a live database.
 
 ```sh
 set -a
-. /home/tudisco/DelegateServer/secrets/litestream-b2.env
+. /etc/tinylord/secrets/litestream.env
 set +a
-export LITESTREAM_SQLCIPHER_KEY="x'$(cat /home/tudisco/DelegateServer/secrets/tinylord.key)'"
+export LITESTREAM_SQLCIPHER_KEY="x'$(cat /etc/tinylord/secrets/tinylord.key)'"
 
 tmp_dir="$(mktemp -d /tmp/tinylord-restore.XXXXXX)"
-/home/tudisco/DelegateServer/litestream-tinylord restore \
-  -o "$tmp_dir/delegate-restored.db" \
-  's3://TinyLord/tinylord/delegate?endpoint=https://s3.us-east-005.backblazeb2.com&sign-payload=true&force-path-style=true'
+/usr/local/bin/litestream-sqlcipher restore \
+  -o "$tmp_dir/app-restored.db" \
+  's3://my-bucket/tinylord/app'
 ```
 
-Open the restored file with a SQLCipher-aware tool using the same key to verify
-it decrypts. Remove the temporary restore directory immediately afterward.
+Open the restored file with a SQLCipher-aware tool using the same key to
+confirm it decrypts and queries. Remove the temporary directory immediately
+afterward — it contains a full copy of your data.
 
 ## Operational Notes
 
-- Backups contain encrypted database pages. The object-store credentials do not
-  replace the TinyLord encryption key; protect and back up that key separately.
-- Keep the key stable. Losing it makes both live databases and backups
-  unrecoverable.
-- Test restores periodically. A successful upload alone is not proof that a
-  backup can be used during an incident.
-- Check replication after every TinyLord deployment or service restart.
+- Backups contain **encrypted** pages. The object-store credentials are not a
+  substitute for the encryption key; protect and back up that key separately,
+  somewhere other than the bucket it protects.
+- Keep the key stable. Losing it makes the live databases *and* every backup
+  permanently unrecoverable.
+- A successful upload is not proof that a backup is usable. Only a completed
+  restore drill is.
+- Replicate `_system.db` alongside your application databases, and restore them
+  as a set — a `_system.db` from a different point in time may not match the
+  collections and grants in the databases it authorizes.

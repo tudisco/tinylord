@@ -1,5 +1,9 @@
 /target
+
+# Private deployment material: server-specific runbooks, scripts, and configs
+# that name real hosts, paths, buckets, or accounts. Never publish these.
 /deploy.sh
+/deploy/
 
 # Never commit data, snapshots, or key material.
 /data

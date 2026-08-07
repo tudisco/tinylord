@@ -477,7 +477,7 @@ key_file   = "./secrets/tinylord.key"   # 0600; contains 64 hex chars
 
 ### 20.7 Backup interaction (amends §10 — important)
 - `VACUUM INTO` executed on a keyed SQLCipher connection produces an **encrypted** snapshot under the same key. Snapshots therefore remain protected at rest — good. Restore = copy the file back; it opens with the same instance key.
-- **Litestream caveat:** the stock Litestream binary is not SQLCipher-aware and may be unable to read/replicate an encrypted database file. Do not assume the external-sidecar DR path works when encryption is enabled. In the README, document this explicitly and recommend, when encryption is on, shipping the encrypted `VACUUM INTO` snapshots to object storage via a simple scheduled file copy as the DR mechanism, unless/until a SQLCipher-capable replication path is verified. Treat "Litestream + SQLCipher" as unverified, not supported-by-default.
+- **Litestream caveat:** the stock Litestream binary is not SQLCipher-aware and cannot read or replicate an encrypted database file; it reports `file is not a database`. Continuous DR under encryption therefore requires a SQLCipher-capable Litestream build that takes the database key at runtime. That path is verified and is the documented default — see `docs/litestream-setup.md`. Never point a stock Litestream binary at an encrypted data file. Scheduled shipping of encrypted `VACUUM INTO` snapshots remains a valid lower-frequency fallback where a custom build isn't practical.
 
 ### 20.8 Testing additions (amends §17)
 - Open an encrypted DB with the correct key → succeeds; with a wrong key → "file is not a database" surfaced as a clean internal error (never leaking the key).

@@ -61,9 +61,9 @@ enabled = false
 # Optional app-specific loopback listeners. This list is file-only: no
 # environment override can select a directory to expose.
 # [[static_apps]]
-# name = "delegate"
+# name = "myapp"
 # bind = "127.0.0.1:9300"
-# directory = "/home/tudisco/DelegateServer/public"
+# directory = "/var/lib/tinylord/apps/myapp/public"
 # spa_fallback = true
 
 [encryption]
