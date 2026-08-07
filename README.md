@@ -350,38 +350,11 @@ tinylord**.
 
 > **S3 here is a backup destination for the operator, not a user-facing feature.**
 
-**Important caveat — Litestream + SQLCipher is unverified.** Stock Litestream is
-not SQLCipher-aware and may be unable to read/replicate an **encrypted** database
-file. Do not assume this DR path works when encryption is enabled. Treat
-"Litestream + SQLCipher" as unverified, not supported-by-default.
-
-**Recommended DR when encryption is ON:** ship the encrypted `VACUUM INTO`
-snapshots to object storage on a schedule (a simple file copy). For example, a
-cron job:
-
-```bash
-# every 15 minutes: snapshot each database and sync the encrypted files to S3
-*/15 * * * * tinylord db snapshot app && aws s3 sync ./snapshots s3://my-bucket/tinylord/
-```
-
-**If you run unencrypted** (not recommended), a stock Litestream sidecar works
-directly against the data files. Example `litestream.yml`:
-
-```yaml
-dbs:
-  - path: ./data/app.db
-    replicas:
-      - type: s3
-        bucket: my-bucket
-        path: tinylord/app
-        region: us-east-1
-```
-
-```bash
-litestream replicate -config litestream.yml
-# restore:
-litestream restore -config litestream.yml ./data/app.db
-```
+For encrypted TinyLord files, use the SQLCipher-aware Litestream build and pass
+the raw SQLCipher key to it at runtime. The production configuration, systemd
+unit, Backblaze B2 example, restore drill, and key-handling requirements are in
+[docs/litestream-setup.md](docs/litestream-setup.md). Do not use a stock
+Litestream binary against encrypted database files.
 
 ---
 
