@@ -137,3 +137,29 @@ pub fn collection_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool
     )?;
     Ok(n > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    #[test]
+    fn bundled_sqlcipher_includes_fts5_and_bm25() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(
+            "
+            CREATE VIRTUAL TABLE search USING fts5(content);
+            INSERT INTO search(content) VALUES ('tiny realtime document datastore');
+            ",
+        )
+        .expect("FTS5 virtual table should be available");
+
+        let score: f64 = conn
+            .query_row(
+                "SELECT bm25(search) FROM search WHERE search MATCH 'realtime'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("BM25 ranking should be available");
+        assert!(score.is_finite());
+    }
+}

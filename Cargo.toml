@@ -27,11 +27,11 @@ tower-http = { version = "0.6", features = ["cors", "limit", "trace", "fs"] }
 # SQLite + SQLCipher (encryption at rest, §20). SQLCipher overrides plain `bundled`.
 # `bundled-sqlcipher-vendored-openssl` statically links a vendored OpenSSL so the
 # binary stays self-contained. `hooks` provides update_hook for realtime (§5.3).
-rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "hooks", "functions", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl", "hooks", "functions", "backup"] }
 r2d2 = "0.8"
-# r2d2_sqlite doesn't expose the vendored-openssl feature; enabling it on rusqlite
-# above unifies onto the same rusqlite build. Here we only need the sqlcipher bundle.
-r2d2_sqlite = { version = "0.25", features = ["bundled-sqlcipher"] }
+# Keep the pool adapter on the same rusqlite / SQLCipher release as the direct
+# database connections. It exposes the vendored OpenSSL feature as well.
+r2d2_sqlite = { version = "0.35", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 # IDs
 ulid = "1"

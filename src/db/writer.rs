@@ -251,7 +251,7 @@ fn open_writer_conn(
     conn.update_hook(Some(move |_action, _db: &str, table: &str, rowid: i64| {
         c.fetch_add(1, Ordering::Relaxed);
         tracing::trace!(table, rowid, "update_hook fired");
-    }));
+    }))?;
 
     Ok(conn)
 }
