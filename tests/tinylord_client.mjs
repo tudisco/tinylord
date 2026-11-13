@@ -122,4 +122,32 @@ await channelStream.return();
 const roster = await channel.presence();
 assert.deepEqual(roster, { clients: [{ client_id: "publisher-1", connected_at: 1 }] });
 
+// Optimistic-concurrency guards travel as If-Match / If-None-Match headers, and
+// a failed guard surfaces as a 412 TinyLordError carrying detail.current.
+const guardCalls = [];
+const guarded = TinyLord.connect({
+  fetch: async (url, options = {}) => {
+    guardCalls.push(options);
+    if (options.headers.get("if-match") === "1") {
+      return Response.json(
+        { error: { code: "precondition_failed", message: "document version does not match", detail: { current: { updated_at: 2 } } } },
+        { status: 412 },
+      );
+    }
+    return options.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json({ id: "n1", updated_at: 3 });
+  },
+});
+const notes = guarded.collection("app", "notes");
+await notes.put("n1", { v: 1 }, { ifNoneMatch: "*" });
+assert.equal(guardCalls.at(-1).headers.get("if-none-match"), "*");
+assert.equal(guardCalls.at(-1).headers.get("content-type"), "application/json");
+await assert.rejects(
+  () => notes.put("n1", { v: 2 }, { ifMatch: 1 }),
+  (error) => error.status === 412 && error.code === "precondition_failed" && error.detail.current.updated_at === 2,
+);
+await notes.delete("n1", { ifMatch: 3 });
+assert.equal(guardCalls.at(-1).headers.get("if-match"), "3");
+await notes.put("n1", { v: 4 });
+assert.equal(guardCalls.at(-1).headers.get("if-match"), null);
+
 console.log("tinylord browser client tests passed");

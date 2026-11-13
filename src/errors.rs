@@ -20,6 +20,7 @@ pub enum ErrorCode {
     Forbidden,
     NotFound,
     Conflict,
+    PreconditionFailed,
     PayloadTooLarge,
     RateLimited,
     Internal,
@@ -34,6 +35,7 @@ impl ErrorCode {
             ErrorCode::Forbidden => "forbidden",
             ErrorCode::NotFound => "not_found",
             ErrorCode::Conflict => "conflict",
+            ErrorCode::PreconditionFailed => "precondition_failed",
             ErrorCode::PayloadTooLarge => "payload_too_large",
             ErrorCode::RateLimited => "rate_limited",
             ErrorCode::Internal => "internal",
@@ -47,6 +49,7 @@ impl ErrorCode {
             ErrorCode::Forbidden => StatusCode::FORBIDDEN,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::Conflict => StatusCode::CONFLICT,
+            ErrorCode::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             ErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -74,7 +77,6 @@ impl ApiError {
         }
     }
 
-    #[allow(dead_code)] // part of the error API; not every error carries detail yet
     pub fn with_detail(mut self, detail: serde_json::Value) -> Self {
         self.detail = Some(detail);
         self

@@ -75,6 +75,13 @@ export class TinyLord {
   }
 }
 
+function guardHeaders({ ifMatch, ifNoneMatch } = {}) {
+  const headers = {};
+  if (ifMatch != null) headers["if-match"] = String(ifMatch);
+  if (ifNoneMatch != null) headers["if-none-match"] = String(ifNoneMatch);
+  return headers;
+}
+
 function browserCookie(name) {
   if (typeof document === "undefined") return null;
   const prefix = `${name}=`;
@@ -92,8 +99,9 @@ class Collection {
   constructor(client, database, name) { this.client = client; this.path = `/v1/db/${database}/collections/${name}`; }
   async create(document) { return this.client._request(`${this.path}/documents`, this.#json("POST", document)); }
   async get(id) { return this.client._request(`${this.path}/documents/${encodeURIComponent(id)}`, { headers: this.client._headers() }); }
-  async put(id, document) { return this.client._request(`${this.path}/documents/${encodeURIComponent(id)}`, this.#json("PUT", document)); }
-  async delete(id) { return this.client._request(`${this.path}/documents/${encodeURIComponent(id)}`, { method: "DELETE", headers: this.client._headers() }); }
+  // Optional guards: { ifMatch: updated_at } or { ifNoneMatch: "*" }. A failed guard throws status 412 with detail.current.
+  async put(id, document, guard = {}) { return this.client._request(`${this.path}/documents/${encodeURIComponent(id)}`, this.#json("PUT", document, guard)); }
+  async delete(id, guard = {}) { return this.client._request(`${this.path}/documents/${encodeURIComponent(id)}`, { method: "DELETE", headers: this.client._headers({ extra: guardHeaders(guard) }) }); }
   async query(options = {}) { return this.client._request(`${this.path}/query`, this.#json("POST", options)); }
   async count(filter = {}) { return this.client._request(`${this.path}/count`, this.#json("POST", { filter })); }
 
@@ -106,8 +114,8 @@ class Collection {
     yield* readEventStream(response);
   }
 
-  #json(method, body) {
-    return { method, headers: this.client._headers({ extra: { "content-type": "application/json" } }), body: JSON.stringify(body) };
+  #json(method, body, guard = {}) {
+    return { method, headers: this.client._headers({ extra: { "content-type": "application/json", ...guardHeaders(guard) } }), body: JSON.stringify(body) };
   }
 }
 

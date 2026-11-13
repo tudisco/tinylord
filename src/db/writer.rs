@@ -22,7 +22,7 @@
 use crate::config::{RealtimeConfig, WriterConfig};
 use crate::db::schema::{self, DocStorage};
 use crate::encryption::Encryption;
-use crate::errors::{map_sqlite_err, ApiError, ApiResult};
+use crate::errors::{map_sqlite_err, ApiError, ApiResult, ErrorCode};
 use crate::realtime::{ChangeEvent, Op};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,19 @@ pub struct DocRecord {
     pub doc: serde_json::Value,
 }
 
+/// Optional optimistic-concurrency guard on replace/delete, checked inside the
+/// writer so the compare and the write are atomic. The version token is the
+/// document's `updated_at`, which the writer keeps strictly increasing per
+/// document so two writes in the same millisecond never share a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precondition {
+    None,
+    /// `If-Match: <updated_at>` — the document must exist at this version.
+    Match(i64),
+    /// `If-None-Match: *` — the document must not exist (create-only PUT).
+    Absent,
+}
+
 /// Commands accepted by the writer actor. Each carries a oneshot reply channel.
 pub enum WriteCommand {
     Create {
@@ -52,11 +65,13 @@ pub enum WriteCommand {
         collection: String,
         id: String,
         doc: serde_json::Value,
+        pre: Precondition,
         reply: oneshot::Sender<ApiResult<(DocRecord, bool)>>,
     },
     Delete {
         collection: String,
         id: String,
+        pre: Precondition,
         reply: oneshot::Sender<ApiResult<bool>>,
     },
     CreateIndex {
@@ -117,20 +132,28 @@ impl WriterHandle {
         collection: String,
         id: String,
         doc: serde_json::Value,
+        pre: Precondition,
     ) -> ApiResult<(DocRecord, bool)> {
         self.dispatch(|reply| WriteCommand::Replace {
             collection,
             id,
             doc,
+            pre,
             reply,
         })
         .await
     }
 
-    pub async fn delete_document(&self, collection: String, id: String) -> ApiResult<bool> {
+    pub async fn delete_document(
+        &self,
+        collection: String,
+        id: String,
+        pre: Precondition,
+    ) -> ApiResult<bool> {
         self.dispatch(|reply| WriteCommand::Delete {
             collection,
             id,
+            pre,
             reply,
         })
         .await
@@ -411,8 +434,9 @@ fn apply_op(conn: &Connection, ctx: &Ctx, cmd: WriteCommand) -> OpResult {
             collection,
             id,
             doc,
+            pre,
             reply,
-        } => match do_replace(conn, ctx, &collection, &id, doc) {
+        } => match do_replace(conn, ctx, &collection, &id, doc, pre) {
             Ok((rec, created, event)) => OpResult::Success(Box::new(move |committed| {
                 if committed {
                     let _ = reply.send(Ok((rec, created)));
@@ -430,8 +454,9 @@ fn apply_op(conn: &Connection, ctx: &Ctx, cmd: WriteCommand) -> OpResult {
         WriteCommand::Delete {
             collection,
             id,
+            pre,
             reply,
-        } => match do_delete(conn, ctx, &collection, &id) {
+        } => match do_delete(conn, ctx, &collection, &id, pre) {
             Ok(Some(event)) => OpResult::Success(Box::new(move |committed| {
                 if committed {
                     let _ = reply.send(Ok(true));
@@ -520,25 +545,30 @@ fn do_replace(
     collection: &str,
     id: &str,
     doc: serde_json::Value,
+    pre: Precondition,
 ) -> ApiResult<(DocRecord, bool, ChangeEvent)> {
     check_db_size(conn, ctx.max_database_bytes)?;
     schema::ensure_collection(conn, collection, ctx.storage).map_err(map_sqlite_err)?;
 
-    let now = crate::ids::now_ms();
+    let mut now = crate::ids::now_ms();
     let doc_text = serde_json::to_string(&doc).map_err(ApiError::internal)?;
     let store = ctx.storage.store_fn();
 
-    // Look up existing created_at to decide insert-vs-update and preserve it.
-    let existing: Option<i64> = conn
+    // Look up existing timestamps to decide insert-vs-update, preserve
+    // created_at, and check the precondition against updated_at.
+    let existing: Option<(i64, i64)> = conn
         .query_row(
-            &format!("SELECT created_at FROM coll_{collection} WHERE id = ?1"),
+            &format!("SELECT created_at, updated_at FROM coll_{collection} WHERE id = ?1"),
             params![id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
+    check_precondition(conn, collection, id, pre, existing.map(|(_, u)| u))?;
 
     let (created, created_at, op) = match existing {
-        Some(created_at) => {
+        Some((created_at, old_updated_at)) => {
+            // Keep updated_at strictly increasing so it works as a version token.
+            now = now.max(old_updated_at + 1);
             // Full replace of the doc; created_at preserved, updated_at bumped.
             conn.execute(
                 &format!(
@@ -584,9 +614,19 @@ fn do_delete(
     ctx: &Ctx,
     collection: &str,
     id: &str,
+    pre: Precondition,
 ) -> ApiResult<Option<ChangeEvent>> {
+    let exists = schema::collection_exists(conn, collection).map_err(map_sqlite_err)?;
+    if pre != Precondition::None {
+        let current = if exists {
+            current_updated_at(conn, collection, id)?
+        } else {
+            None
+        };
+        check_precondition(conn, collection, id, pre, current)?;
+    }
     // The collection may not exist yet; that is simply "not found".
-    if !schema::collection_exists(conn, collection).map_err(map_sqlite_err)? {
+    if !exists {
         return Ok(None);
     }
     let now = crate::ids::now_ms();
@@ -608,6 +648,64 @@ fn do_delete(
         id: id.to_string(),
         doc: None,
     }))
+}
+
+fn current_updated_at(conn: &Connection, collection: &str, id: &str) -> ApiResult<Option<i64>> {
+    match conn.query_row(
+        &format!("SELECT updated_at FROM coll_{collection} WHERE id = ?1"),
+        params![id],
+        |r| r.get(0),
+    ) {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(map_sqlite_err(e)),
+    }
+}
+
+/// Fails with `412 precondition_failed` unless `pre` holds for the document's
+/// current version (`None` = absent). The error detail carries the current
+/// envelope (or null) so a client can merge without another round trip.
+fn check_precondition(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+    pre: Precondition,
+    current: Option<i64>,
+) -> ApiResult<()> {
+    let ok = match pre {
+        Precondition::None => true,
+        Precondition::Match(v) => current == Some(v),
+        Precondition::Absent => current.is_none(),
+    };
+    if ok {
+        return Ok(());
+    }
+    let envelope = match current {
+        None => serde_json::Value::Null,
+        Some(_) => {
+            let (doc_text, created_at, updated_at): (String, i64, i64) = conn
+                .query_row(
+                    &format!(
+                        "SELECT json(doc), created_at, updated_at FROM coll_{collection} WHERE id = ?1"
+                    ),
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .map_err(map_sqlite_err)?;
+            let doc: serde_json::Value =
+                serde_json::from_str(&doc_text).map_err(ApiError::internal)?;
+            serde_json::json!({
+                "id": id,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "doc": doc,
+            })
+        }
+    };
+    Err(
+        ApiError::new(ErrorCode::PreconditionFailed, "document version does not match")
+            .with_detail(serde_json::json!({ "current": envelope })),
+    )
 }
 
 /// Insert a changelog row and return its seq (the row's PRIMARY KEY / rowid).

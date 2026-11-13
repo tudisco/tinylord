@@ -295,6 +295,30 @@ curl -s -X DELETE $BASE/v1/db/app/collections/users/documents/01J... \
   -H "Authorization: Bearer $USER"
 ```
 
+#### Optimistic concurrency
+
+A document's `updated_at` doubles as its version: it strictly increases on every
+replace. PUT and DELETE accept an optional guard, checked atomically with the
+write:
+
+- `If-Match: <updated_at>` (bare or quoted) — write only if the document still
+  has that version. A missing document also fails the guard.
+- `If-None-Match: *` (PUT only) — create only if the id is not taken; useful for
+  idempotent retries with client-chosen ids.
+
+A failed guard returns `412 precondition_failed` and writes nothing. Its
+`detail.current` is the document's current envelope (or `null` if absent), so a
+client can merge and retry without another GET.
+
+```bash
+curl -s -X PUT $BASE/v1/db/app/collections/users/documents/01J... \
+  -H "Authorization: Bearer $USER" -H 'content-type: application/json' \
+  -H 'If-Match: 1767225600123' -d '{"name":"Ada"}'
+```
+
+In `tinylord.js`: `coll.put(id, doc, { ifMatch: env.updated_at })`,
+`coll.put(id, doc, { ifNoneMatch: "*" })`, `coll.delete(id, { ifMatch })`.
+
 ### Query & count (grant read)
 
 ```bash
@@ -518,6 +542,7 @@ have changed.
 | 403 | `forbidden` | insufficient role / not admin |
 | 404 | `not_found` | database, document, or index absent |
 | 409 | `conflict` | name collision, unique-index violation |
+| 412 | `precondition_failed` | `If-Match` / `If-None-Match` guard failed (`detail.current` holds the current envelope) |
 | 413 | `payload_too_large` | document or database size limit |
 | 429 | `rate_limited` | per-principal rate limit (includes `Retry-After`) |
 | 500 | `internal` | unexpected server error (never leaks SQL/paths) |

@@ -257,6 +257,8 @@ fn build_cors(cfg: &CorsConfig) -> CorsLayer {
         .allow_headers(vec![
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
+            header::IF_MATCH,
+            header::IF_NONE_MATCH,
             HeaderName::from_static("x-csrf-token"),
         ])
 }
@@ -371,8 +373,8 @@ fn openapi_doc() -> serde_json::Value {
             },
             "/v1/db/{db}/collections/{coll}/documents/{id}": {
                 "get": { "summary": "Get document", "security": [bearer], "responses": {"200": ok_json, "404": ok_json} },
-                "put": { "summary": "Replace/upsert document", "security": [bearer], "responses": {"200": ok_json, "201": ok_json} },
-                "delete": { "summary": "Delete document", "security": [bearer], "responses": {"204": {}, "404": ok_json} }
+                "put": { "summary": "Replace/upsert document (optional If-Match: <updated_at> or If-None-Match: *)", "security": [bearer], "responses": {"200": ok_json, "201": ok_json, "412": ok_json} },
+                "delete": { "summary": "Delete document (optional If-Match: <updated_at>)", "security": [bearer], "responses": {"204": {}, "404": ok_json, "412": ok_json} }
             },
             "/v1/db/{db}/collections/{coll}/query": {
                 "post": { "summary": "Query documents", "security": [bearer], "responses": {"200": ok_json} }

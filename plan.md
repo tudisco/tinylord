@@ -122,7 +122,7 @@ CREATE TABLE _indexes (
 ### 4.3 Documents, IDs, timestamps
 - IDs are **server-generated ULIDs** (sortable, chronological). Clients never supply IDs on create.
 - Store documents as **JSONB**: `INSERT ... VALUES (jsonb(?1), ...)` where `?1` is the JSON text. Return documents to clients as JSON text via `json(doc)`.
-- `created_at`/`updated_at` are set server-side (unix ms). On create both equal now; on replace, `created_at` is preserved and `updated_at` is set to now. The API returns them as top-level metadata fields, not inside `doc` (see §7.4).
+- `created_at`/`updated_at` are set server-side (unix ms). On create both equal now; on replace, `created_at` is preserved and `updated_at` is set to now, or to the previous value + 1 if now would not advance it (so it is a strictly increasing version token). The API returns them as top-level metadata fields, not inside `doc` (see §7.4).
 
 ## 5. Storage engine details (critical correctness section)
 
@@ -198,6 +198,7 @@ All responses are JSON. All errors use the envelope in §13. Version prefix `/v1
 - `GET    /v1/db/{db}/collections/{coll}/documents/{id}` — returns the document or `404`. Requires `read`.
 - `PUT    /v1/db/{db}/collections/{coll}/documents/{id}` — **full replace / upsert**: create if absent, else replace `doc` wholesale, preserving `created_at`, updating `updated_at`. Requires `write`.
 - `DELETE /v1/db/{db}/collections/{coll}/documents/{id}` — deletes (explicit WHERE). `404` if absent. Requires `write`.
+- PUT and DELETE accept an optional optimistic-concurrency guard checked inside the writer: `If-Match: <updated_at>` (document must exist at that version) or, on PUT only, `If-None-Match: *` (document must not exist). Failure → `412 precondition_failed` with the current envelope in `detail.current`. `updated_at` is kept strictly increasing per document so it is a safe version token.
 
 ### 7.4 Document envelope (responses)
 
@@ -344,7 +345,7 @@ allowed_origins = ["http://localhost:5173"]   # never "*" when tokens are used
 { "error": { "code": "not_found", "message": "human readable", "detail": null } }
 ```
 
-Code → HTTP mapping: `bad_request`/`validation`→400, `unauthorized`→401, `forbidden`→403, `not_found`→404, `conflict`→409 (unique violation, name collision), `payload_too_large`→413, `rate_limited`→429, `internal`→500. Never leak SQL or internal paths in `message`.
+Code → HTTP mapping: `bad_request`/`validation`→400, `unauthorized`→401, `forbidden`→403, `not_found`→404, `conflict`→409 (unique violation, name collision), `precondition_failed`→412 (If-Match / If-None-Match guard), `payload_too_large`→413, `rate_limited`→429, `internal`→500. Never leak SQL or internal paths in `message`.
 
 ## 14. CLI (`clap`)
 - `tinylord serve [--config tinylord.toml]` — run the server; bootstrap admin token on first run.
@@ -373,7 +374,7 @@ Shape when built:
 Build the v1 auth, token, rate-limit, and logging layers so this module only needs a config section, a grant type, and a handler.
 
 ### 16.2 Other deferred items
-- `$set` / `$inc` partial updates + optimistic concurrency via a `_rev` field / `If-Match` (→ `409` on conflict).
+- `$set` / `$inc` partial updates. (Optimistic concurrency shipped as `If-Match` on `updated_at`, §7.3.)
 - Live-queries with enter/leave semantics over the existing SSE stream.
 - Optional per-collection JSON Schema validation (default off).
 - An MCP server wrapper exposing the admin + data API as tools for agents.

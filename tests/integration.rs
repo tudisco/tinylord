@@ -227,6 +227,65 @@ async fn crud_and_roles() {
 }
 
 #[tokio::test]
+async fn conditional_put_and_delete() {
+    let s = start_server(1_048_576).await;
+    let token = s.provision("app", "write").await;
+    let c = s.client();
+    let url = format!("{}/v1/db/app/collections/notes/documents/n1", s.base);
+    let put = |body: serde_json::Value, h: Option<(&'static str, String)>| {
+        let mut r = c.put(&url).bearer_auth(&token).json(&body);
+        if let Some((k, v)) = h {
+            r = r.header(k, v);
+        }
+        r.send()
+    };
+
+    // Create-only PUT: succeeds when absent, 412 once the document exists.
+    let created = put(serde_json::json!({ "v": 1 }), Some(("If-None-Match", "*".into()))).await.unwrap();
+    assert_eq!(created.status(), 201);
+    let v1 = created.json::<serde_json::Value>().await.unwrap()["updated_at"].as_i64().unwrap();
+    let again = put(serde_json::json!({ "v": 9 }), Some(("If-None-Match", "*".into()))).await.unwrap();
+    assert_eq!(again.status(), 412);
+
+    // Matching version (bare or quoted) writes and strictly advances updated_at.
+    let ok = put(serde_json::json!({ "v": 2 }), Some(("If-Match", format!("\"{v1}\"")))).await.unwrap();
+    assert_eq!(ok.status(), 200);
+    let v2 = ok.json::<serde_json::Value>().await.unwrap()["updated_at"].as_i64().unwrap();
+    assert!(v2 > v1);
+
+    // Stale version → 412 carrying the current envelope; nothing was written.
+    let stale = put(serde_json::json!({ "v": 3 }), Some(("If-Match", v1.to_string()))).await.unwrap();
+    assert_eq!(stale.status(), 412);
+    let body: serde_json::Value = stale.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "precondition_failed");
+    assert_eq!(body["error"]["detail"]["current"]["updated_at"], v2);
+    assert_eq!(body["error"]["detail"]["current"]["doc"]["v"], 2);
+
+    // Two writers racing on the same version: exactly one wins.
+    let (a, b) = tokio::join!(
+        put(serde_json::json!({ "v": "a" }), Some(("If-Match", v2.to_string()))),
+        put(serde_json::json!({ "v": "b" }), Some(("If-Match", v2.to_string()))),
+    );
+    let mut codes = [a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
+    codes.sort();
+    assert_eq!(codes, [200, 412]);
+
+    // Malformed header → 400; unconditional PUT still works.
+    assert_eq!(put(serde_json::json!({}), Some(("If-Match", "abc".into()))).await.unwrap().status(), 400);
+    let latest: serde_json::Value = put(serde_json::json!({ "v": 4 }), None).await.unwrap().json().await.unwrap();
+    let v4 = latest["updated_at"].as_i64().unwrap();
+
+    // Conditional delete: stale → 412 (document kept), current → 204, then a
+    // version-guarded delete of the missing document → 412.
+    let del = |v: i64| c.delete(&url).bearer_auth(&token).header("If-Match", v.to_string()).send();
+    assert_eq!(del(v1).await.unwrap().status(), 412);
+    assert_eq!(del(v4).await.unwrap().status(), 204);
+    assert_eq!(del(v4).await.unwrap().status(), 412);
+    let none_match = c.delete(&url).bearer_auth(&token).header("If-None-Match", "*").send().await.unwrap();
+    assert_eq!(none_match.status(), 400);
+}
+
+#[tokio::test]
 async fn unique_index_conflict() {
     let s = start_server(1_048_576).await;
     let token = s.provision("app", "admin").await;

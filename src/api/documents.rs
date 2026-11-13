@@ -3,13 +3,13 @@
 
 use crate::api::{AppState, DocEnvelope};
 use crate::db::schema;
-use crate::db::writer::DocRecord;
+use crate::db::writer::{DocRecord, Precondition};
 use crate::errors::{map_sqlite_err, ApiError, ApiResult};
 use crate::ids;
 use crate::limits::check_document_size;
 use crate::system::Role;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
@@ -18,6 +18,35 @@ fn require_object(body: &serde_json::Value) -> ApiResult<()> {
         Ok(())
     } else {
         Err(ApiError::bad_request("document body must be a JSON object"))
+    }
+}
+
+/// Parses the optional `If-Match` / `If-None-Match` request headers. The version
+/// token is the envelope's `updated_at`, bare or as a quoted ETag (`"123"`).
+/// Only `If-None-Match: *` is supported, and only where `allow_absent` is set.
+fn precondition(headers: &HeaderMap, allow_absent: bool) -> ApiResult<Precondition> {
+    let get = |name| {
+        headers
+            .get(name)
+            .map(|v| {
+                v.to_str()
+                    .map(str::trim)
+                    .map_err(|_| ApiError::bad_request("invalid precondition header"))
+            })
+            .transpose()
+    };
+    match (get(header::IF_MATCH)?, get(header::IF_NONE_MATCH)?) {
+        (None, None) => Ok(Precondition::None),
+        (Some(v), None) => v
+            .trim_matches('"')
+            .parse()
+            .map(Precondition::Match)
+            .map_err(|_| ApiError::bad_request("If-Match must be the document's updated_at")),
+        (None, Some("*")) if allow_absent => Ok(Precondition::Absent),
+        (None, Some(_)) => Err(ApiError::bad_request("only If-None-Match: * is supported on PUT")),
+        (Some(_), Some(_)) => Err(ApiError::bad_request(
+            "If-Match and If-None-Match cannot be combined",
+        )),
     }
 }
 
@@ -68,9 +97,11 @@ pub async fn put_doc(
     State(state): State<AppState>,
     principal: crate::auth::Principal,
     Path((db, coll, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult<impl IntoResponse> {
     state.authorize(&principal, &db, Role::Write).await?;
+    let pre = precondition(&headers, true)?;
     ids::require_valid_name("collection", &coll)?;
     if ids::is_reserved_collection(&coll) {
         return Err(ApiError::validation("collection name is reserved"));
@@ -79,7 +110,7 @@ pub async fn put_doc(
     check_document_size(&body, state.config.limits.max_document_bytes)?;
 
     let handle = state.open_db(&db).await?;
-    let (rec, created) = handle.writer.replace_document(coll, id, body).await?;
+    let (rec, created) = handle.writer.replace_document(coll, id, body, pre).await?;
     let status = if created {
         StatusCode::CREATED
     } else {
@@ -92,12 +123,14 @@ pub async fn delete_doc(
     State(state): State<AppState>,
     principal: crate::auth::Principal,
     Path((db, coll, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> ApiResult<impl IntoResponse> {
     state.authorize(&principal, &db, Role::Write).await?;
+    let pre = precondition(&headers, false)?;
     ids::require_valid_name("collection", &coll)?;
 
     let handle = state.open_db(&db).await?;
-    let deleted = handle.writer.delete_document(coll, id).await?;
+    let deleted = handle.writer.delete_document(coll, id, pre).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
