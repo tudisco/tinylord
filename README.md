@@ -370,3 +370,7 @@ No realtime delivery guarantees. No `$set`/`$inc`, aggregation, joins,
 ## License
 
 [MIT](LICENSE) © 2026 tudisco.biz.
+
+## Notifications
+
+An optional server-side notification service supports durable scheduling, status checks, cancellation, and Pushover or Telegram delivery. See [notification service setup and API](docs/notifications.md).

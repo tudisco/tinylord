@@ -25,10 +25,25 @@ pub struct Config {
     pub cors: CorsConfig,
     pub encryption: EncryptionConfig,
     pub auth: AuthConfig,
+    pub notifications: NotificationConfig,
     /// File-only static application listeners. They deliberately have no
     /// environment overrides: an environment value must not choose a directory
     /// to expose over HTTP.
     pub static_apps: Vec<StaticAppConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct NotificationConfig {
+    pub enabled: bool,
+    pub delegate: DelegateNotificationConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct DelegateNotificationConfig {
+    pub enabled: bool,
+    pub public_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +264,7 @@ impl Default for Config {
             encryption: EncryptionConfig::default(),
             auth: AuthConfig::default(),
             static_apps: Vec::new(),
+            notifications: NotificationConfig::default(),
         }
     }
 }

@@ -1044,3 +1044,76 @@ async fn pubsub_disabled_hides_endpoints() {
         404
     );
 }
+
+#[tokio::test]
+async fn notification_settings_and_durable_queue_are_private() {
+    let mut s = start_server_ext(1_048_576, "[notifications]\nenabled = true\n").await;
+    let c = s.client();
+    let endpoint = format!("{}/v1/notifications",s.base);
+    assert_eq!(c.get(format!("{endpoint}/settings")).send().await.unwrap().status(),401);
+    let saved = c.put(format!("{endpoint}/settings")).bearer_auth(&s.admin)
+        .json(&serde_json::json!({"enabled":false,"token":"a".repeat(30),"user_key":"b".repeat(30),"timezone":"America/Mexico_City","morning_enabled":false,"morning_time":"09:00"}))
+        .send().await.unwrap();
+    assert_eq!(saved.status(),200);
+    let settings = saved.text().await.unwrap();
+    assert!(!settings.contains(&"a".repeat(30)) && !settings.contains(&"b".repeat(30)));
+    let other = s.provision("independent", "read").await;
+    let other_settings: serde_json::Value = c.get(format!("{endpoint}/settings")).bearer_auth(&other).send().await.unwrap().json().await.unwrap();
+    assert_eq!(other_settings["configured"],false);
+    let request = serde_json::json!({"title":"Example","message":"Scheduled message","deliver_at":"2030-01-01T12:00:00Z","url":"https://example.org/task/1","idempotency_key":"example-job"});
+    for _ in 0..2 {
+        let response = c.post(&endpoint).bearer_auth(&s.admin).json(&request).send().await.unwrap();
+        assert_eq!(response.status(),200);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["id"],"example-job"); assert_eq!(body["state"],"pending");
+    }
+    let mut different = request.clone(); different["message"] = serde_json::json!("Different");
+    assert_eq!(c.post(&endpoint).bearer_auth(&s.admin).json(&different).send().await.unwrap().status(),409);
+    assert_eq!(c.delete(format!("{endpoint}/example-job")).bearer_auth(&other).send().await.unwrap().status(),404);
+    assert_eq!(c.delete(format!("{endpoint}/example-job")).bearer_auth(&s.admin).send().await.unwrap().status(),200);
+    let job: serde_json::Value = c.get(format!("{endpoint}/example-job")).bearer_auth(&s.admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(job["state"],"cancelled");
+    // Internal storage cannot be addressed through the normal document routes.
+    assert!(!c.get(format!("{}/v1/db/__notifications/collections/configs/documents/admin",s.base)).bearer_auth(&s.admin).send().await.unwrap().status().is_success());
+    let invalid = c.put(format!("{endpoint}/settings")).bearer_auth(&s.admin)
+        .json(&serde_json::json!({"enabled":false,"timezone":"not-a-zone","morning_enabled":false,"morning_time":"09:00"})).send().await.unwrap();
+    assert_eq!(invalid.status(),400);
+    s.child.kill().unwrap(); s.child.wait().unwrap();
+    s.child = Command::new(BIN).args(["--config", s._dir.path().join("tinylord.toml").to_str().unwrap(), "serve"])
+        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    for _ in 0..100 {
+        if c.get(format!("{}/health",s.base)).send().await.is_ok() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let restored: serde_json::Value = c.get(format!("{endpoint}/example-job")).bearer_auth(&s.admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(restored["state"],"cancelled");
+    let restored_settings: serde_json::Value = c.get(format!("{endpoint}/settings")).bearer_auth(&s.admin).send().await.unwrap().json().await.unwrap();
+    assert_eq!(restored_settings["configured"],true);
+    let bytes = std::fs::read(s._dir.path().join("data/__notifications.db")).unwrap();
+    assert!(!bytes.windows(30).any(|chunk| chunk == b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+}
+
+#[tokio::test]
+async fn notification_provider_switch_retains_other_credentials() {
+    let s = start_server_ext(1_048_576, "[notifications]\nenabled = true\n").await;
+    let c = s.client();
+    let endpoint = format!("{}/v1/notifications/settings",s.base);
+    let responses = [
+        serde_json::json!({"provider":"pushover","enabled":false,"token":"a".repeat(30),"user_key":"b".repeat(30)}),
+        serde_json::json!({"provider":"telegram","enabled":false,"telegram_bot_token":format!("123456:{}","c".repeat(35)),"telegram_chat_id":"-1001234567890"}),
+        serde_json::json!({"provider":"pushover","enabled":false,"token":"","user_key":""}),
+        serde_json::json!({"provider":"telegram","enabled":false,"disconnect":true}),
+    ];
+    for (index,input) in responses.iter().enumerate() {
+        // Disabled configurations validate format only; this test never contacts a provider.
+        let response = c.put(&endpoint).bearer_auth(&s.admin).json(input).send().await.unwrap();
+        assert_eq!(response.status(),200);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["configured"],true);
+        assert_eq!(body["providers"]["pushover"]["configured"],true);
+        assert_eq!(body["providers"]["telegram"]["configured"],index==1||index==2);
+        assert_eq!(body["provider"],if index==1 {"telegram"} else {"pushover"});
+        let encoded=body.to_string();
+        assert!(!encoded.contains(&"a".repeat(30)) && !encoded.contains(&"c".repeat(35)) && !encoded.contains("-1001234567890"));
+    }
+}

@@ -39,6 +39,8 @@ export class TinyLord {
     this.csrfToken = null;
   }
 
+  notifications() { return new Notifications(this); }
+
   async me() { return this._request("/v1/auth/me", { headers: this._headers() }); }
   db(name) { return new Database(this, name); }
   collection(database, collection) { return this.db(database).collection(collection); }
@@ -177,4 +179,21 @@ async function* readEventStream(response) {
       }
     }
   } finally { reader.releaseLock(); }
+}
+
+
+class Notifications {
+  constructor(client) { this.client = client; }
+  settings() { return this.request("/settings"); }
+  configure(settings) { return this.request("/settings", "PUT", settings); }
+  test() { return this.request("/test", "POST"); }
+  schedule(notification) { return this.request("", "POST", notification); }
+  status(id) { return this.request("/" + encodeURIComponent(id)); }
+  cancel(id) { return this.request("/" + encodeURIComponent(id), "DELETE"); }
+  request(path, method = "GET", body) {
+    return this.client._request("/v1/notifications" + path, {
+      method, headers: this.client._headers({ extra: { "content-type": "application/json" } }),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  }
 }

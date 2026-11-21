@@ -6,6 +6,7 @@ pub mod documents;
 pub mod indexes;
 pub mod pubsub;
 pub mod query_ep;
+pub mod notifications;
 
 use crate::auth::Principal;
 use crate::config::{Config, CorsConfig};
@@ -31,6 +32,7 @@ pub struct AppState {
     pub registry: Arc<DbRegistry>,
     pub rate_guard: Arc<RateGuard>,
     pub login_guard: Arc<LoginGuard>,
+    pub notification_guard: Arc<tokio::sync::Mutex<()>>,
     pub config: Arc<Config>,
     /// Held for future use (e.g. per-request keyed operations); the registry and
     /// system already carry their own clones for opening connections.
@@ -54,6 +56,7 @@ impl AppState {
             registry,
             rate_guard,
             login_guard,
+            notification_guard: Arc::new(tokio::sync::Mutex::new(())),
             config: Arc::new(config),
             encryption,
             openapi,
@@ -128,6 +131,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/refresh", post(browser_auth::refresh))
         .route("/v1/auth/logout", post(browser_auth::logout))
         .route("/v1/auth/me", get(browser_auth::me))
+        .route("/v1/notifications/settings", get(notifications::get_settings).put(notifications::save_settings))
+        .route("/v1/notifications/test", post(notifications::test_notification))
+        .route("/v1/notifications", post(notifications::schedule))
+        .route("/v1/notifications/{id}", get(notifications::job_status).delete(notifications::cancel))
         // Admin (§7.2)
         .route(
             "/v1/admin/databases",
@@ -338,6 +345,20 @@ fn openapi_doc() -> serde_json::Value {
             }
         },
         "paths": {
+            "/v1/notifications/settings": {
+                "get": { "summary": "Get this principal's notification settings (credentials omitted)", "security": [bearer], "responses": {"200": ok_json} },
+                "put": { "summary": "Configure a notification provider; credentials are write-only", "security": [bearer], "responses": {"200": ok_json, "400": ok_json} }
+            },
+            "/v1/notifications/test": {
+                "post": { "summary": "Send a test notification (one per minute)", "security": [bearer], "responses": {"200": ok_json, "429": ok_json} }
+            },
+            "/v1/notifications": {
+                "post": { "summary": "Schedule a durable notification with an optional idempotency key", "security": [bearer], "responses": {"200": ok_json, "409": ok_json} }
+            },
+            "/v1/notifications/{id}": {
+                "get": { "summary": "Get this principal's notification and delivery status", "security": [bearer], "responses": {"200": ok_json, "404": ok_json} },
+                "delete": { "summary": "Cancel a notification before delivery starts", "security": [bearer], "responses": {"200": ok_json, "409": ok_json} }
+            },
             "/health": { "get": { "summary": "Liveness", "security": [], "responses": {"200": ok_json} } },
             "/openapi.json": { "get": { "summary": "This document", "security": [], "responses": {"200": ok_json} } },
             "/v1/admin/databases": {

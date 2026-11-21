@@ -161,6 +161,7 @@ async fn serve(config_path: &PathBuf, allow_unencrypted: bool) -> Result<()> {
     let bind = cfg.server.bind.clone();
     let static_apps = cfg.static_apps.clone();
     let state = api::AppState::new(system, registry, cfg, encryption);
+    api::notifications::start(state.clone())?;
     let app = api::build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
